@@ -41,14 +41,26 @@ export async function probeQuote(options: {
   network: string
   /** Expected asset contract; a challenge in any other token fails closed. */
   asset?: string
+  /** Deadline for the quote request; defaults to 30s. */
+  timeoutMs?: number
   fetchImpl?: typeof fetch
 }): Promise<Quote> {
   const { url, body, network, asset, fetchImpl = fetch } = options
-  const response = await fetchImpl(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  })
+  let response: Response
+  try {
+    response = await fetchImpl(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      // The quote runs before any payment, so a hung seller must not hang
+      // the run: fail closed instead.
+      signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+    })
+  } catch (error) {
+    throw new ChallengeError(
+      `Could not reach ${url} for a price quote: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
   if (response.status !== 402) {
     throw new ChallengeError(
       `Expected a 402 challenge from ${url}, got HTTP ${response.status}`,

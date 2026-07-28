@@ -341,3 +341,117 @@ describe("poll resilience", () => {
     }
   })
 })
+
+describe("money-safety regressions", () => {
+  it("records the authorized ceiling when the CLI omits the charged amount", async () => {
+    // The CLI pays whatever the seller's own challenge asks, up to
+    // --maxAmount. Falling back to the cheaper probe quote would under-count
+    // and let a later call slip past the cap.
+    const endpoint = await startFakeEndpoint({ amount: "1000" })
+    vi.stubEnv("FAKE_RESULT", "paid-no-amount")
+    try {
+      const config = testConfig(endpoint.url, {
+        PER_CALL_MAX_USD: "$0.002",
+      })
+      const meter = new SpendMeter(moneyToMicros("$0.005"))
+      const result = await runMeteredCall({ config, meter, prompt: "hi" })
+      expect(result.status).toBe("paid")
+      expect(meter.totalMicros).toBe(2000n) // the $0.002 ceiling, not the $0.001 quote
+    } finally {
+      await endpoint.close()
+    }
+  })
+
+  it("clamps the CLI authorization to what is left of the cap", async () => {
+    const endpoint = await startFakeEndpoint({ amount: "1000" })
+    const argsFile = join(mkdtempSync(join(tmpdir(), "metered-")), "args.jsonl")
+    vi.stubEnv("FAKE_RESULT", "paid")
+    vi.stubEnv("FAKE_ARGS_FILE", argsFile)
+    try {
+      const config = testConfig(endpoint.url, { PER_CALL_MAX_USD: "$0.002" })
+      const meter = new SpendMeter(moneyToMicros("$0.0015"))
+      await runMeteredCall({ config, meter, prompt: "hi" })
+      const payArgs = JSON.parse(
+        readFileSync(argsFile, "utf8").trim().split("\n")[0] ?? "[]",
+      ) as string[]
+      // Remaining cap ($0.0015) is below the per-call ceiling ($0.002).
+      expect(payArgs).toContain("--maxAmount=0.0015")
+    } finally {
+      await endpoint.close()
+    }
+  })
+
+  it("does not report a queued body without a usable poll_url as delivered", async () => {
+    const endpoint = await startFakeEndpoint({ amount: "1000" })
+    vi.stubEnv("FAKE_RESULT", "paid-queued-no-url")
+    try {
+      const config = testConfig(endpoint.url, { ENDPOINT_KIND: "image" })
+      const meter = new SpendMeter(moneyToMicros("$0.05"))
+      const result = await runMeteredCall({ config, meter, prompt: "hi" })
+      expect(result.status).toBe("paid_but_error")
+    } finally {
+      await endpoint.close()
+    }
+  })
+
+  it("does not report a non-ok poll response as delivered", async () => {
+    // HTTP 500 whose JSON body has no error key and no status: without the
+    // response.ok check this parsed as a successful delivery.
+    const endpoint = await startFakeEndpoint({
+      amount: "21000",
+      pollHttpError: 500,
+    })
+    vi.stubEnv("FAKE_RESULT", "paid-queued")
+    try {
+      const config = testConfig(endpoint.url, {
+        ENDPOINT_KIND: "image",
+        PER_CALL_MAX_USD: "$0.025",
+      })
+      const meter = new SpendMeter(moneyToMicros("$0.05"))
+      const result = await runMeteredCall({
+        config,
+        meter,
+        prompt: "hi",
+        pollIntervalMs: 10,
+        pollMaxMs: 500,
+      })
+      expect(result.status).toBe("paid_but_error")
+    } finally {
+      await endpoint.close()
+    }
+  })
+
+  it("surfaces a network mismatch with actionable detail", async () => {
+    const endpoint = await startFakeEndpoint({ amount: "1000" })
+    vi.stubEnv("FAKE_RESULT", "network-mismatch")
+    try {
+      const config = testConfig(endpoint.url)
+      const meter = new SpendMeter(moneyToMicros("$0.005"))
+      const result = await runMeteredCall({ config, meter, prompt: "hi" })
+      expect(result.status).toBe("failed")
+      if (result.status === "failed") {
+        expect(result.reason).toContain("network mismatch")
+        expect(result.reason).toContain("eip155:8453")
+      }
+      expect(meter.totalMicros).toBe(0n)
+    } finally {
+      await endpoint.close()
+    }
+  })
+
+  it("reports a killed CLI as possibly in flight even with partial output", async () => {
+    vi.stubEnv("FAKE_RESULT", "paid")
+    vi.stubEnv("FAKE_KILL", "1")
+    const outcome = await payX402({
+      bin: FAKE_BIN,
+      url: "http://localhost/paid",
+      accountId: "acct_test",
+      maxAmountUsd: "0.002",
+      requestBody: { model: "m" },
+    })
+    expect(outcome.status).toBe("failed")
+    if (outcome.status === "failed") {
+      expect(outcome.reason).toContain("may already be in flight")
+    }
+  })
+})

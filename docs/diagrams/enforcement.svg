@@ -66,14 +66,22 @@
   <rect class="box" x="488" y="210" width="300" height="40" rx="7"/>
   <text class="label ink" x="638" y="235" text-anchor="middle">Approval threshold check</text>
 
-  <path class="arrow-accent" d="M638 250 L638 270"/>
+  <path class="arrow" d="M566 250 L536 270"/>
+  <text class="tiny muted" x="520" y="266" text-anchor="middle">under</text>
 
-  <rect class="accent-box" x="488" y="272" width="300" height="48" rx="7"/>
-  <text class="label accent" x="638" y="292" text-anchor="middle">Pending intent -&gt; human approve</text>
-  <text class="tiny muted" x="638" y="308" text-anchor="middle">re-run same command consumes approval</text>
+  <rect class="box" x="488" y="272" width="140" height="48" rx="7"/>
+  <text class="label ink" x="558" y="292" text-anchor="middle">Pays</text>
+  <text class="tiny muted" x="558" y="308" text-anchor="middle">settles on delivery</text>
 
-  <path class="line" d="M372 232 L448 232" marker-end="url(#arrow)"/>
-  <text class="tiny muted" x="410" y="224" text-anchor="middle">then pay</text>
+  <path class="arrow-accent" d="M710 250 L740 270"/>
+  <text class="tiny muted" x="756" y="266" text-anchor="middle">over</text>
+
+  <rect class="accent-box" x="640" y="272" width="148" height="48" rx="7"/>
+  <text class="label accent" x="714" y="292" text-anchor="middle">Parks for approval</text>
+  <text class="tiny muted" x="714" y="308" text-anchor="middle">re-run consumes it</text>
+
+  <path class="line" d="M372 232 L484 232" marker-end="url(#arrow)"/>
+  <text class="tiny muted" x="428" y="224" text-anchor="middle">then pay</text>
 
   <!-- Bottom stages -->
   <text class="label ink" x="32" y="360">Payment truth - three stages</text>

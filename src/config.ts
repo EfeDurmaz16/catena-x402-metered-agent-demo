@@ -45,7 +45,12 @@ const envSchema = z.object({
     .default("$0.05")
     .refine((v) => moneyToMicros(v) > 0n, "cap must be greater than 0"),
   /** Per-call ceiling passed to the CLI as --maxAmount (defense in depth). */
-  PER_CALL_MAX_USD: money.default("$0.025"),
+  PER_CALL_MAX_USD: money
+    .default("$0.025")
+    .refine(
+      (v) => moneyToMicros(v) > 0n,
+      "per-call max must be greater than 0",
+    ),
   /** Only Base Sepolia challenges are paid; anything else fails closed. */
   X402_NETWORK: z.literal("eip155:84532").default("eip155:84532"),
   /** Only this asset is paid (Circle's Base Sepolia USDC, 6 decimals): the

@@ -68,7 +68,12 @@ console.log(
   `Cap:      ${config.SPEND_CAP_USD} total, ${config.PER_CALL_MAX_USD} per call\n`,
 )
 
-let outcome: "completed" | "cap_reached" | "approval_pending" = "completed"
+let outcome:
+  | "completed"
+  | "cap_reached"
+  | "approval_pending"
+  | "setup_required"
+  | "failed" = "completed"
 let degraded = false
 const settleTally: Record<string, number> = {}
 for (let i = 1; i <= calls; i++) {
@@ -111,11 +116,12 @@ for (let i = 1; i <= calls; i++) {
       console.error(
         `call ${i}/${calls}: endpoint payTo is not a saved counterparty.\n${result.createCommand ?? "Create it in the Catena console, then re-run."}`,
       )
-      process.exit(2)
+      outcome = "setup_required"
       break
     case "failed":
       console.error(`call ${i}/${calls}: FAILED: ${result.reason}`)
-      process.exit(1)
+      outcome = "failed"
+      break
   }
   if (outcome !== "completed") break
 }
@@ -125,16 +131,38 @@ const tally = Object.entries(settleTally)
   .join(", ")
 console.log(`\nSpend: ${meter.summary()}`)
 console.log(`Settlement: ${tally || "no payments"}`)
-console.log(
-  outcome === "completed"
-    ? "DONE: all calls finished under the cap."
-    : outcome === "cap_reached"
-      ? "DONE: cap enforced; the over-cap call was refused before any payment."
-      : "WAITING: a call is parked for human approval; nothing was charged for it.",
-)
+// Report the degradation before the closing line, so the last thing on
+// screen is never a clean DONE for a run that charged without delivering.
 if (degraded) {
   console.error(
     "WARNING: at least one paid call returned an error body instead of a result; the endpoint, not the payment leg, failed. Check the intent status printed above - a failed intent means Catena released the funds.",
   )
-  process.exitCode = 1
 }
+switch (outcome) {
+  case "completed":
+    console.log(
+      degraded
+        ? "DONE with warnings: see the charged-without-delivery note above."
+        : "DONE: all calls finished under the cap.",
+    )
+    break
+  case "cap_reached":
+    console.log(
+      "DONE: cap enforced; the over-cap call was refused before any payment.",
+    )
+    break
+  case "approval_pending":
+    console.log(
+      "WAITING: a call is parked for human approval; nothing was charged for it. Exit code 0: this is a normal outcome, not a failure.",
+    )
+    break
+  case "setup_required":
+    console.error("STOPPED: finish the setup step above, then re-run.")
+    process.exitCode = 2
+    break
+  case "failed":
+    console.error("STOPPED: a call failed; see the error above.")
+    process.exitCode = 1
+    break
+}
+if (degraded && process.exitCode === undefined) process.exitCode = 1

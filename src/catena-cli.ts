@@ -88,7 +88,12 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
   ]
   let stdout: string
   try {
-    ;({ stdout } = await execFileAsync(bin, args, { timeout: 120_000 }))
+    ;({ stdout } = await execFileAsync(bin, args, {
+      timeout: 120_000,
+      // A paid response body (an image job, a long completion) can exceed
+      // the 1 MiB default, which would kill the child AFTER it paid.
+      maxBuffer: 32 * 1024 * 1024,
+    }))
   } catch (error) {
     // Non-zero exit still prints the JSON result (e.g. approvalPending);
     // fall through to parsing when stdout is present.
@@ -98,13 +103,19 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
       killed?: boolean
       signal?: string
     }
-    if (!failed.stdout) {
-      const killed = failed.killed === true || typeof failed.signal === "string"
+    const killed = failed.killed === true || typeof failed.signal === "string"
+    if (killed) {
+      // Whether or not partial output arrived, a killed CLI may have already
+      // submitted the payment: never report a plain failure for it.
       return {
         status: "failed",
-        reason: killed
-          ? `CLI timed out or was killed (${failed.signal ?? "unknown"}) before reporting a result; a payment intent may already be in flight - check the Catena console before retrying`
-          : (failed.stderr?.trim() ?? String(error)),
+        reason: `CLI timed out or was killed (${failed.signal ?? "unknown"}) before reporting a result; a payment intent may already be in flight - check the Catena console before retrying`,
+      }
+    }
+    if (!failed.stdout) {
+      return {
+        status: "failed",
+        reason: failed.stderr?.trim() ?? String(error),
       }
     }
     stdout = failed.stdout
@@ -132,7 +143,10 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
     }
   }
   if (result.networkMismatch) {
-    return { status: "failed", reason: "network mismatch (see CLI output)" }
+    return {
+      status: "failed",
+      reason: `network mismatch: the account cannot pay this challenge's network (${JSON.stringify(result.networkMismatch).slice(0, 200)}); re-run with --account set to a wallet on that network`,
+    }
   }
   if (result.paid) {
     const amount = result.payment?.amountAtomicUsdc

@@ -65,6 +65,27 @@ const results = {
     },
     error: "paid HTTP retry threw before a body came back",
   },
+  "paid-queued-no-url": {
+    paid: true,
+    payment: {
+      intentId: "int_test",
+      amountAtomicUsdc: "1000",
+      payTo: "0xpayto",
+    },
+    body: JSON.stringify({ status: "queued" }),
+  },
+  "paid-no-amount": {
+    paid: true,
+    payment: { intentId: "int_test", payTo: "0xpayto" },
+    body: { choices: [{ message: { content: "ok" } }] },
+  },
+  "network-mismatch": {
+    paid: false,
+    networkMismatch: {
+      requiredNetworks: ["base"],
+      requiredNetworkIds: ["eip155:8453"],
+    },
+  },
   garbage: "not json at all",
 }
 
@@ -93,6 +114,12 @@ if (process.argv[2] === "intents") {
 }
 
 const key = process.env.FAKE_RESULT ?? "paid"
+if (process.env.FAKE_KILL) {
+  // Print partial output, then die by signal: models a killed CLI that may
+  // already have submitted the payment.
+  process.stdout.write('{"paid":true,')
+  process.kill(process.pid, "SIGKILL")
+}
 if (key === "hard-fail") {
   // Non-zero exit with NO stdout: models the CLI dying before any result.
   process.stderr.write(process.env.FAKE_STDERR ?? "catena: not logged in")

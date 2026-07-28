@@ -57,8 +57,18 @@ The demo treats these as distinct, because they are:
    the runner prints a per-status tally rather than assuming success.
 
 A charged-but-undelivered call is always surfaced as `paid_but_error` and
-the runner exits non-zero; an unreadable poll response is retried, never
-mistaken for a delivered body.
+the runner exits non-zero. Polling is fail-closed in every direction: a
+transport rejection or unreadable body is retried until the deadline; a
+non-ok HTTP response is wrapped as an error even when its JSON body looks
+benign; a body still claiming `queued` at the deadline (or one that never
+carried a usable `poll_url`) reports as charged-without-delivery rather
+than success. Each attempt carries an `AbortSignal` bounded by what is left
+of the deadline, so the configured limit is a real time bound.
+
+When the CLI does not report the charged amount, the meter records the
+amount that was **authorized** (`--maxAmount`), never the cheaper probe
+quote: the CLI pays whatever the seller's own challenge asks up to that
+ceiling, and under-recording would let a later call slip past the cap.
 
 ## Why `exact`, and what `upto` would change
 

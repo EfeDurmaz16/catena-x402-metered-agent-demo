@@ -49,6 +49,9 @@ export async function startFakeEndpoint(options?: {
   queuedPolls?: number
   /** First N GET polls answer a non-JSON 502 (gateway blip). */
   brokenPolls?: number
+  /** Serve every poll with this HTTP status and a JSON body carrying no
+   * error key (models a seller 500 that still returns JSON). */
+  pollHttpError?: number
 }): Promise<FakeEndpoint> {
   const state = {
     gets: 0,
@@ -62,6 +65,13 @@ export async function startFakeEndpoint(options?: {
       if (state.gets <= (options?.brokenPolls ?? 0)) {
         res.writeHead(502, { "content-type": "text/html" })
         res.end("<html>bad gateway</html>")
+        return
+      }
+      if (options?.pollHttpError) {
+        res.writeHead(options.pollHttpError, {
+          "content-type": "application/json",
+        })
+        res.end(JSON.stringify({ message: "internal error" }))
         return
       }
       if (

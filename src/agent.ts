@@ -128,7 +128,7 @@ export async function runMeteredCall(options: {
   })
 
   if (outcome.status === "paid_but_error") {
-    const amountMicros = outcome.amountMicros ?? quote.amountMicros
+    const amountMicros = outcome.amountMicros ?? authorizedMicros
     meter.record(config.MODEL, amountMicros)
     const settlementStatus = outcome.intentId
       ? (await readIntent(config.CATENA_BIN, outcome.intentId)).settlementStatus
@@ -141,10 +141,12 @@ export async function runMeteredCall(options: {
     }
   }
   if (outcome.status !== "paid") return outcome
-  // Trust the CLI's reported charge; fall back to the quote when absent.
-  // The meter records it either way: if settlement later fails, Catena
-  // releases the reserved funds and the meter has merely been conservative.
-  const amountMicros = outcome.amountMicros ?? quote.amountMicros
+  // Trust the CLI's reported charge; when absent, fall back to the amount we
+  // AUTHORIZED (--maxAmount), not the probe quote: the CLI pays whatever the
+  // seller's own challenge asks up to that ceiling, so recording the quote
+  // could under-count a larger charge and let later calls slip past the cap.
+  // Over-recording only makes the cap bind early, which is the safe error.
+  const amountMicros = outcome.amountMicros ?? authorizedMicros
   meter.record(config.MODEL, amountMicros)
 
   // Async endpoints (image generation) answer the paid retry with a queued
@@ -176,10 +178,11 @@ export async function runMeteredCall(options: {
     }
   }
 
-  // A queued/in_progress body that was never resolved (missing intent id
-  // or signature, cross-origin poll_url, or poll timed out) must not read
-  // as a delivered success.
-  if (job && isUnresolvedJob(body)) {
+  // A queued/in_progress body that was never resolved (missing intent id or
+  // signature, a body claiming queued without a usable poll_url, a
+  // cross-origin poll_url, or a poll that timed out) must not read as a
+  // delivered success.
+  if (isUnresolvedJob(body)) {
     body = {
       error:
         "paid job result was never retrieved (missing intent/signature to poll, or poll timed out while still queued)",
@@ -252,24 +255,45 @@ async function pollJob(options: {
   let last: unknown = { error: "poll timed out before a terminal status" }
   while (Date.now() - startedAt < maxMs) {
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
-    const response = await fetchImpl(pollUrl, {
-      headers: {
-        "payment-signature": paymentSignature,
-        accept: "application/json",
-      },
-    })
+    let response: Response
+    try {
+      response = await fetchImpl(pollUrl, {
+        headers: {
+          "payment-signature": paymentSignature,
+          accept: "application/json",
+        },
+        // Bound each attempt by what is left of the deadline, so maxMs is a
+        // real time limit rather than a loop-condition suggestion.
+        signal: AbortSignal.timeout(
+          Math.max(1, startedAt + maxMs - Date.now()),
+        ),
+      })
+    } catch (error) {
+      // A transport-level rejection after payment must not escape as an
+      // unhandled error: keep polling, and if the deadline passes this body
+      // reports as paid_but_error with reconciliation intact.
+      const timedOut = error instanceof Error && error.name === "TimeoutError"
+      last = {
+        error: timedOut
+          ? "poll timed out before a terminal status"
+          : `poll failed: ${error instanceof Error ? error.message : String(error)}`,
+      }
+      continue
+    }
     const parsed: unknown = await response.json().catch(() => undefined)
     // A transient gateway error (non-JSON body) is not a terminal answer:
-    // keep polling until maxMs. A JSON object on a non-ok response IS the
-    // seller's answer (e.g. a permanent failure) and terminates immediately;
-    // isErrorBody downstream classifies it.
+    // keep polling until maxMs.
     if (typeof parsed !== "object" || parsed === null) {
       last = {
         error: `poll failed: HTTP ${response.status} with an unreadable body`,
       }
       continue
     }
-    last = parsed
+    // A non-ok response is never a delivery, whatever its body claims: wrap
+    // it so it cannot be mistaken for a result that lacks an error key.
+    last = response.ok
+      ? parsed
+      : { error: `poll failed: HTTP ${response.status}`, body: parsed }
     const status = (parsed as { status?: unknown }).status
     if (status !== "queued" && status !== "in_progress") return last
   }
