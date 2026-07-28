@@ -1,27 +1,41 @@
 # Architecture
 
-![Stack](diagrams/stack.svg)
+```mermaid
+flowchart LR
+  A["Metered agent<br/>quote, cap, reconcile"] -->|402 then pay| E["BlockRun<br/>image API"]
+  A -->|catena x402 --json| CLI[Catena CLI]
+  CLI --> POL["Catena policy engine<br/>allowlist, rules, approvals"]
+  POL -->|EIP-3009| USDC[(USDC on Base Sepolia)]
+  USDC --> E
+  E -.->|queued job, then delivery| A
 
-![Where enforcement lives](diagrams/enforcement.svg)
-
-One paid call, end to end:
-
+  classDef platform stroke-width:2px
+  class POL platform
 ```
-runner --> agent: quote unpaid (402 header)  --> cap check (bigint micros)
-                                                  |
-                                   refuse before payment when over cap
-                                                  |
-        catena x402 --account ... --maxAmount min(per-call, remaining cap)
-                                                  |
-        Catena policy engine: counterparty allowlist, rules, approval threshold
-                                                  |
-              paid retry --> BlockRun --> 202 queued job + poll_url
-                                                  |
-        poll with the payment's own signature (catena intents get)
-                                                  |
-              delivery --> seller settles on the completing poll
-                                                  |
-        reconcile: intents get -> inner transaction status -> report
+
+```mermaid
+flowchart TB
+  Q["Quote unpaid<br/>price from the 402 header"] --> CAP{Fits the run cap?}
+  CAP -- no --> STOP["Refused before payment<br/>the CLI is never invoked"]
+  CAP -- yes --> RES["Reserve the authorized ceiling<br/>same tick as the check"]
+  RES --> PAY["catena x402<br/>--maxAmount = min per-call, remaining"]
+
+  PAY --> POL{Catena policy}
+  POL -- counterparty not allowed --> BLOCK["Blocked, nothing charged"]
+  POL -- under threshold --> GO["Pays, settles on delivery"]
+  POL -- over threshold --> PARK["Parks as a pending intent<br/>human approves, re-run consumes it"]
+
+  subgraph client["Client bookkeeping: fast refusals, not the boundary"]
+    Q
+    CAP
+    RES
+  end
+  subgraph platform["Catena: the actual boundary"]
+    POL
+    BLOCK
+    GO
+    PARK
+  end
 ```
 
 ## Where enforcement lives
@@ -43,6 +57,30 @@ Two independent layers, by design:
   consumes the approval.
 
 ## Payment truth has three stages
+
+```mermaid
+stateDiagram-v2
+  [*] --> Authorized: CLI reports paid
+  note right of Authorized
+    Funds reserved, not moved
+  end note
+
+  Authorized --> Delivered: endpoint returns the result
+  Authorized --> Released: endpoint never delivers
+  note right of Released
+    Catena marks the intent failed
+    and releases the funds
+  end note
+
+  Delivered --> Settled: intent transaction completed
+  note right of Settled
+    catena intents get
+    is what the runner reports
+  end note
+
+  Settled --> [*]
+  Released --> [*]
+```
 
 The demo treats these as distinct, because they are:
 

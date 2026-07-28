@@ -4,9 +4,43 @@ A metered agent that consumes a real pay-per-request x402 endpoint
 (BlockRun's image-generation API on Base Sepolia) and pays each call from a
 Catena account, with a configured spend cap enforced before any money moves.
 
-![Stack: agent → BlockRun x402 → catena CLI → Catena policy → USDC](docs/diagrams/stack.svg)
+```mermaid
+flowchart LR
+  A["Metered agent<br/>quote, cap, reconcile"] -->|402 then pay| E["BlockRun<br/>image API"]
+  A -->|catena x402 --json| CLI[Catena CLI]
+  CLI --> POL["Catena policy engine<br/>allowlist, rules, approvals"]
+  POL -->|EIP-3009| USDC[(USDC on Base Sepolia)]
+  USDC --> E
+  E -.->|queued job, then delivery| A
 
-![Client spend cap vs Catena platform policy](docs/diagrams/enforcement.svg)
+  classDef platform stroke-width:2px
+  class POL platform
+```
+
+```mermaid
+flowchart TB
+  Q["Quote unpaid<br/>price from the 402 header"] --> CAP{Fits the run cap?}
+  CAP -- no --> STOP["Refused before payment<br/>the CLI is never invoked"]
+  CAP -- yes --> RES["Reserve the authorized ceiling<br/>same tick as the check"]
+  RES --> PAY["catena x402<br/>--maxAmount = min per-call, remaining"]
+
+  PAY --> POL{Catena policy}
+  POL -- counterparty not allowed --> BLOCK["Blocked, nothing charged"]
+  POL -- under threshold --> GO["Pays, settles on delivery"]
+  POL -- over threshold --> PARK["Parks as a pending intent<br/>human approves, re-run consumes it"]
+
+  subgraph client["Client bookkeeping: fast refusals, not the boundary"]
+    Q
+    CAP
+    RES
+  end
+  subgraph platform["Catena: the actual boundary"]
+    POL
+    BLOCK
+    GO
+    PARK
+  end
+```
 
 Each call follows the x402 cycle: request → 402 challenge → pay → retry →
 response. The runner tracks a running spend total in exact bigint
