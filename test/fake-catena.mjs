@@ -32,6 +32,16 @@ if (process.env.FAKE_ARGS_FILE) {
     JSON.stringify(process.argv.slice(2)) + "\n",
   )
 }
+if (process.argv[2] === "intents") {
+  console.log(
+    JSON.stringify({
+      id: process.argv[4] ?? "int_test",
+      status: process.env.FAKE_INTENT_STATUS ?? "completed",
+    }),
+  )
+  process.exit(0)
+}
+
 const key = process.env.FAKE_RESULT ?? "paid"
 const result = results[key]
 console.log(typeof result === "string" ? result : JSON.stringify(result))

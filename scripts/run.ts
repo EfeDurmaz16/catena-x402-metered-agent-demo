@@ -44,15 +44,17 @@ for (let i = 1; i <= calls; i++) {
   switch (result.status) {
     case "paid": {
       const preview = JSON.stringify(result.body ?? "").slice(0, 80)
+      const settle = result.settlementStatus ?? "unknown"
       console.log(
-        `call ${i}/${calls}: paid ${microsToMoney(result.amountMicros)} -> ${preview}`,
+        `call ${i}/${calls}: paid ${microsToMoney(result.amountMicros)} (intent ${settle}) -> ${preview}`,
       )
       break
     }
     case "paid_but_error": {
       const preview = JSON.stringify(result.body ?? "").slice(0, 80)
+      const settle = result.settlementStatus ?? "unknown"
       console.log(
-        `call ${i}/${calls}: paid ${microsToMoney(result.amountMicros)} but the endpoint returned an error (charged without delivery): ${preview}`,
+        `call ${i}/${calls}: authorized ${microsToMoney(result.amountMicros)} but the endpoint returned an error (intent ${settle}; a failed intent means Catena released the funds): ${preview}`,
       )
       degraded = true
       break

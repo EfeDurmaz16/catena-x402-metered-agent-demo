@@ -1,14 +1,25 @@
-import { payX402 } from "./catena-cli.js"
+import { getIntentStatus, payX402 } from "./catena-cli.js"
 import { probeQuote } from "./challenge.js"
 import type { Config } from "./config.js"
 import type { SpendMeter } from "./meter.js"
 
 export type MeteredCallResult =
-  | { status: "paid"; amountMicros: bigint; body: unknown }
-  /** The payment settled but the endpoint returned an error body: money
-   * moved without delivery. Surfaced distinctly so a run never reads a
-   * charged failure as success. */
-  | { status: "paid_but_error"; amountMicros: bigint; body: unknown }
+  | {
+      status: "paid"
+      amountMicros: bigint
+      settlementStatus: string | undefined
+      body: unknown
+    }
+  /** The x402 exchange reported paid but the endpoint returned an error
+   * body. Whether funds actually moved is what settlementStatus says: a
+   * failed intent means Catena released the reserved funds. Surfaced
+   * distinctly so a run never reads a charged failure as success. */
+  | {
+      status: "paid_but_error"
+      amountMicros: bigint
+      settlementStatus: string | undefined
+      body: unknown
+    }
   | { status: "cap_reached"; priceMicros: bigint }
   | { status: "approval_pending"; intentId: string | undefined }
   | { status: "setup_required"; createCommand: string | undefined }
@@ -86,12 +97,22 @@ export async function runMeteredCall(options: {
 
   if (outcome.status !== "paid") return outcome
   // Trust the CLI's reported charge; fall back to the quote when absent.
-  // The charge is recorded either way: the money moved even if the endpoint
-  // then failed to deliver.
+  // The meter records it either way: if settlement later fails, Catena
+  // releases the reserved funds and the meter has merely been conservative.
   const amountMicros = outcome.amountMicros ?? quote.amountMicros
   meter.record(config.MODEL, amountMicros)
+  // Reconcile with the platform: "paid" in the x402 exchange is an
+  // authorization; the intent's status says whether funds actually settled.
+  const settlementStatus = outcome.intentId
+    ? await getIntentStatus(config.CATENA_BIN, outcome.intentId)
+    : undefined
   if (isErrorBody(outcome.body)) {
-    return { status: "paid_but_error", amountMicros, body: outcome.body }
+    return {
+      status: "paid_but_error",
+      amountMicros,
+      settlementStatus,
+      body: outcome.body,
+    }
   }
-  return { status: "paid", amountMicros, body: outcome.body }
+  return { status: "paid", amountMicros, settlementStatus, body: outcome.body }
 }

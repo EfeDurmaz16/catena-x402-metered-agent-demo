@@ -39,7 +39,12 @@ const resultSchema = z.looseObject({
 })
 
 export type PayOutcome =
-  | { status: "paid"; amountMicros: bigint | undefined; body: unknown }
+  | {
+      status: "paid"
+      amountMicros: bigint | undefined
+      intentId: string | undefined
+      body: unknown
+    }
   | { status: "approval_pending"; intentId: string | undefined }
   | { status: "setup_required"; createCommand: string | undefined }
   | { status: "failed"; reason: string }
@@ -107,11 +112,38 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
     return {
       status: "paid",
       amountMicros: amount && /^\d+$/.test(amount) ? BigInt(amount) : undefined,
+      intentId: result.payment?.id,
       body: result.body,
     }
   }
   return {
     status: "failed",
     reason: `CLI reported no payment: ${JSON.stringify(result.error ?? result).slice(0, 200)}`,
+  }
+}
+
+/**
+ * Reconcile a payment with the platform's record: the x402 exchange saying
+ * "paid" is not the same as the funds settling (a seller can fail after the
+ * authorization, in which case Catena marks the intent failed and releases
+ * the reserved funds). Returns the intent's current status, or undefined
+ * when it cannot be read; never throws.
+ */
+export async function getIntentStatus(
+  bin: string,
+  intentId: string,
+): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync(
+      bin,
+      ["intents", "get", intentId, "--json"],
+      { timeout: 60_000 },
+    )
+    const intent = z
+      .looseObject({ status: z.string().optional() })
+      .parse(JSON.parse(stdout))
+    return intent.status
+  } catch {
+    return undefined
   }
 }

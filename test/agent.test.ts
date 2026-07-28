@@ -74,11 +74,18 @@ describe("runMeteredCall", () => {
       const result = await runMeteredCall({ config, meter, prompt: "hi" })
       expect(result.status).toBe("paid")
       expect(meter.totalMicros).toBe(1000n)
-      // The CLI must be driven with the per-call ceiling and the account.
-      const args = JSON.parse(readFileSync(argsFile, "utf8").trim()) as string[]
+      // The CLI must be driven with the per-call ceiling and the account,
+      // then re-invoked to reconcile the intent's settlement status.
+      const lines = readFileSync(argsFile, "utf8").trim().split("\n")
+      const args = JSON.parse(lines[0] ?? "[]") as string[]
       expect(args).toContain("--account=acct_test")
       expect(args).toContain("--maxAmount=0.002")
       expect(args).toContain("--json")
+      const reconcile = JSON.parse(lines[1] ?? "[]") as string[]
+      expect(reconcile.slice(0, 2)).toEqual(["intents", "get"])
+      if (result.status === "paid") {
+        expect(result.settlementStatus).toBe("completed")
+      }
     } finally {
       delete process.env.FAKE_RESULT
       delete process.env.FAKE_ARGS_FILE
