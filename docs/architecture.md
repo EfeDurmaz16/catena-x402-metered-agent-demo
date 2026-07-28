@@ -59,27 +59,21 @@ Two independent layers, by design:
 ## Payment truth has three stages
 
 ```mermaid
-stateDiagram-v2
-  [*] --> Authorized: CLI reports paid
-  note right of Authorized
-    Funds reserved, not moved
-  end note
+flowchart LR
+  A["1. Authorized<br/>CLI reports paid<br/>funds reserved, not moved"]
+  D["2. Delivered<br/>endpoint returns the result"]
+  S["3. Settled<br/>intent transaction completed"]
+  R["Released<br/>intent failed<br/>Catena returns the reserved funds"]
 
-  Authorized --> Delivered: endpoint returns the result
-  Authorized --> Released: endpoint never delivers
-  note right of Released
-    Catena marks the intent failed
-    and releases the funds
-  end note
+  A -->|endpoint delivers| D
+  D -->|seller settles on the completing poll| S
+  A -->|endpoint never delivers| R
 
-  Delivered --> Settled: intent transaction completed
-  note right of Settled
-    catena intents get
-    is what the runner reports
-  end note
+  S --> OK([runner reports paid])
+  R --> ERR([runner reports paid_but_error, exits 1])
 
-  Settled --> [*]
-  Released --> [*]
+  classDef bad stroke-dasharray: 4 3
+  class R,ERR bad
 ```
 
 The demo treats these as distinct, because they are:
