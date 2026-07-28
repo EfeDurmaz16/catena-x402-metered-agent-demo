@@ -48,7 +48,7 @@ try {
   )
   process.exit(2)
 }
-// [21] missing account id is a setup problem, not an unexpected failure
+// missing account id is a setup problem, not an unexpected failure
 if (!config.CATENA_ACCOUNT_ID) {
   console.error("CATENA_ACCOUNT_ID is required to pay (see .env.example)")
   process.exit(2)
@@ -134,7 +134,7 @@ console.log(
 )
 if (degraded) {
   console.error(
-    "WARNING: at least one settled call returned an error body (charged without delivery); the endpoint, not the payment leg, failed.",
+    "WARNING: at least one paid call returned an error body instead of a result; the endpoint, not the payment leg, failed. Check the intent status printed above - a failed intent means Catena released the funds.",
   )
   process.exitCode = 1
 }

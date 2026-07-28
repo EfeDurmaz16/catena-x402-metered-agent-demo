@@ -173,14 +173,14 @@ function asQueuedJob(body: unknown): { pollUrl: string } | undefined {
       return undefined
     }
   }
-  const job = parsed as { status?: unknown; poll_url?: unknown } | undefined
-  if (
-    (job?.status === "queued" || job?.status === "in_progress") &&
-    typeof job.poll_url === "string"
-  ) {
-    return { pollUrl: job.poll_url }
+  if (typeof parsed !== "object" || parsed === null) return undefined
+  if (!("status" in parsed) || !("poll_url" in parsed)) return undefined
+  if (parsed.status !== "queued" && parsed.status !== "in_progress") {
+    return undefined
   }
-  return undefined
+  return typeof parsed.poll_url === "string"
+    ? { pollUrl: parsed.poll_url }
+    : undefined
 }
 
 /** Poll an async job until it leaves queued/in_progress or time runs out.

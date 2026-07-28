@@ -30,7 +30,6 @@ export function challengeHeader(options?: {
 
 export interface FakeEndpoint {
   url: string
-  requests: number
   /** GET polls served so far. */
   gets: number
   /** PAYMENT-SIGNATURE header seen on the last GET poll, if any. */
@@ -52,7 +51,6 @@ export async function startFakeEndpoint(options?: {
   brokenPolls?: number
 }): Promise<FakeEndpoint> {
   const state = {
-    requests: 0,
     gets: 0,
     polledWith: undefined as string | undefined,
   }
@@ -84,7 +82,6 @@ export async function startFakeEndpoint(options?: {
       )
       return
     }
-    state.requests += 1
     const headers: Record<string, string> = {
       "content-type": "application/json",
     }
@@ -103,9 +100,6 @@ export async function startFakeEndpoint(options?: {
   }
   return {
     url: `http://localhost:${address.port}/chat`,
-    get requests() {
-      return state.requests
-    },
     get gets() {
       return state.gets
     },

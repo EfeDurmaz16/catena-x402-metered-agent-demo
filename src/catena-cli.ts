@@ -92,7 +92,7 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
       signal?: string
     }
     if (!failed.stdout) {
-      const killed = failed.killed ?? failed.signal
+      const killed = failed.killed === true || typeof failed.signal === "string"
       return {
         status: "failed",
         reason: killed
