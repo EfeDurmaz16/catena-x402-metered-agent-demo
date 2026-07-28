@@ -107,17 +107,22 @@ export async function runMeteredCall(options: {
     }
   }
 
-  if (meter.wouldExceed(quote.amountMicros)) {
-    return { status: "cap_reached", priceMicros: quote.amountMicros }
-  }
-
   // Authorize the CLI for at most the smaller of the per-call ceiling and
   // the remaining run budget, so even a challenge that changed since the
-  // quote cannot push the total past the cap.
+  // quote cannot push the total past the cap. Reserving that ceiling (not
+  // the quote) in the same tick as the check means a concurrent call sees
+  // the worst case this one could spend, and no await sits between the two.
   const perCallMicros = moneyToMicros(config.PER_CALL_MAX_USD)
   const remainingMicros = meter.capMicros - meter.totalMicros
   const authorizedMicros =
     perCallMicros < remainingMicros ? perCallMicros : remainingMicros
+  if (
+    meter.capMicros - meter.totalMicros < quote.amountMicros ||
+    !meter.reserve(authorizedMicros)
+  ) {
+    return { status: "cap_reached", priceMicros: quote.amountMicros }
+  }
+
   const outcome = await payX402({
     bin: config.CATENA_BIN,
     url: config.ENDPOINT_URL,
@@ -129,7 +134,7 @@ export async function runMeteredCall(options: {
 
   if (outcome.status === "paid_but_error") {
     const amountMicros = outcome.amountMicros ?? authorizedMicros
-    meter.record(config.MODEL, amountMicros)
+    meter.settle(config.MODEL, authorizedMicros, amountMicros)
     const settlementStatus = outcome.intentId
       ? (await readIntent(config.CATENA_BIN, outcome.intentId)).settlementStatus
       : undefined
@@ -140,14 +145,18 @@ export async function runMeteredCall(options: {
       body: outcome.body,
     }
   }
-  if (outcome.status !== "paid") return outcome
+  if (outcome.status !== "paid") {
+    // Nothing was charged: hand the reservation back.
+    meter.release(authorizedMicros)
+    return outcome
+  }
   // Trust the CLI's reported charge; when absent, fall back to the amount we
   // AUTHORIZED (--maxAmount), not the probe quote: the CLI pays whatever the
   // seller's own challenge asks up to that ceiling, so recording the quote
   // could under-count a larger charge and let later calls slip past the cap.
   // Over-recording only makes the cap bind early, which is the safe error.
   const amountMicros = outcome.amountMicros ?? authorizedMicros
-  meter.record(config.MODEL, amountMicros)
+  meter.settle(config.MODEL, authorizedMicros, amountMicros)
 
   // Async endpoints (image generation) answer the paid retry with a queued
   // job and a poll_url; the result is fetched by polling with the payment's

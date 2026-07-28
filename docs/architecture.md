@@ -87,8 +87,11 @@ same cap logic applies to the authorized maximum instead of a fixed price.
   the intent may already be in flight; the wrapper says so and points at
   the console instead of retrying blindly. Production would derive an
   idempotency key from the payment authorization.
-- **Single-process meter.** The spend total lives in one process; the
-  platform-side rules are what bind across processes and machines.
+- **Single-process meter.** The spend total lives in one process. Within it,
+  the cap is concurrency-safe: a call reserves its authorized ceiling in the
+  same tick as the check and settles to the actual charge afterwards, so two
+  calls in flight cannot both pass a budget only one fits. Across processes
+  or machines, the platform-side rules are what bind.
 - **BlockRun testnet upstreams vary.** Chat models currently fail after
   authorization (upstream credential errors, reported to BlockRun);
   OpenAI image models deliver. The endpoint, model and kind are env

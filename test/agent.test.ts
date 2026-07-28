@@ -455,3 +455,25 @@ describe("money-safety regressions", () => {
     }
   })
 })
+
+describe("concurrent cap safety", () => {
+  it("lets only one of two concurrent calls through a one-call cap", async () => {
+    // Reserving in the same tick as the check is what makes this hold: with
+    // a check-then-act meter both calls saw an empty budget and paid.
+    const endpoint = await startFakeEndpoint({ amount: "1000" })
+    vi.stubEnv("FAKE_RESULT", "paid")
+    try {
+      const config = testConfig(endpoint.url, { PER_CALL_MAX_USD: "$0.001" })
+      const meter = new SpendMeter(moneyToMicros("$0.001"))
+      const [first, second] = await Promise.all([
+        runMeteredCall({ config, meter, prompt: "a" }),
+        runMeteredCall({ config, meter, prompt: "b" }),
+      ])
+      const statuses = [first.status, second.status].sort()
+      expect(statuses).toEqual(["cap_reached", "paid"])
+      expect(meter.totalMicros).toBe(1000n)
+    } finally {
+      await endpoint.close()
+    }
+  })
+})

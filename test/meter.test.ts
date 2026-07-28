@@ -32,20 +32,40 @@ describe("config", () => {
 })
 
 describe("SpendMeter", () => {
-  it("allows spending exactly up to the cap and refuses past it", () => {
+  it("allows reserving exactly up to the cap and refuses past it", () => {
     const meter = new SpendMeter(3000n)
-    expect(meter.wouldExceed(1000n)).toBe(false)
-    meter.record("a", 1000n)
-    meter.record("b", 1000n)
-    expect(meter.wouldExceed(1000n)).toBe(false) // lands exactly on the cap
-    meter.record("c", 1000n)
-    expect(meter.wouldExceed(1n)).toBe(true)
+    expect(meter.reserve(1000n)).toBe(true)
+    meter.settle("a", 1000n, 1000n)
+    expect(meter.reserve(1000n)).toBe(true)
+    meter.settle("b", 1000n, 1000n)
+    expect(meter.reserve(1000n)).toBe(true) // lands exactly on the cap
+    meter.settle("c", 1000n, 1000n)
+    expect(meter.reserve(1n)).toBe(false)
     expect(meter.totalMicros).toBe(3000n)
     expect(meter.entries).toHaveLength(3)
   })
 
   it("refuses a first call that is already over the cap", () => {
     const meter = new SpendMeter(500n)
-    expect(meter.wouldExceed(1000n)).toBe(true)
+    expect(meter.reserve(1000n)).toBe(false)
+    expect(meter.totalMicros).toBe(0n) // a refused reservation claims nothing
+  })
+
+  it("counts a reservation while the payment is in flight", () => {
+    // The race the reservation exists to close: a second caller must see
+    // the first caller's worst case before that call has settled.
+    const meter = new SpendMeter(1000n)
+    expect(meter.reserve(1000n)).toBe(true)
+    expect(meter.reserve(1000n)).toBe(false)
+    meter.release(1000n)
+    expect(meter.reserve(1000n)).toBe(true)
+  })
+
+  it("settles to the actual charge, which may differ from the reservation", () => {
+    const meter = new SpendMeter(5000n)
+    meter.reserve(2000n) // authorized ceiling
+    meter.settle("call", 2000n, 1200n) // seller charged less
+    expect(meter.totalMicros).toBe(1200n)
+    expect(meter.entries[0]?.amountMicros).toBe(1200n)
   })
 })
