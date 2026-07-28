@@ -39,9 +39,11 @@ export async function probeQuote(options: {
   url: string
   body: unknown
   network: string
+  /** Expected asset contract; a challenge in any other token fails closed. */
+  asset?: string
   fetchImpl?: typeof fetch
 }): Promise<Quote> {
-  const { url, body, network, fetchImpl = fetch } = options
+  const { url, body, network, asset, fetchImpl = fetch } = options
   const response = await fetchImpl(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -67,14 +69,17 @@ export async function probeQuote(options: {
     )
   }
   const match = challenge.accepts.find(
-    (a) => a.scheme === "exact" && a.network === network,
+    (a) =>
+      a.scheme === "exact" &&
+      a.network === network &&
+      (asset === undefined || a.asset.toLowerCase() === asset.toLowerCase()),
   )
   if (!match) {
     const offered = challenge.accepts
-      .map((a) => `${a.scheme}/${a.network}`)
+      .map((a) => `${a.scheme}/${a.network}/${a.asset}`)
       .join(", ")
     throw new ChallengeError(
-      `No exact-scheme challenge for ${network} (offered: ${offered})`,
+      `No exact-scheme challenge for ${network}${asset ? ` in ${asset}` : ""} (offered: ${offered})`,
     )
   }
   return {

@@ -36,7 +36,23 @@ function argValue(flag: string): string | undefined {
   return index >= 0 ? process.argv[index + 1] : undefined
 }
 
-const config = loadConfig()
+let config
+try {
+  config = loadConfig()
+} catch (error) {
+  console.error(
+    `Invalid configuration: ${error instanceof Error ? error.message : String(error)}`,
+  )
+  console.error(
+    "Check .env against .env.example (money values look like $0.05).",
+  )
+  process.exit(2)
+}
+// [21] missing account id is a setup problem, not an unexpected failure
+if (!config.CATENA_ACCOUNT_ID) {
+  console.error("CATENA_ACCOUNT_ID is required to pay (see .env.example)")
+  process.exit(2)
+}
 const calls = Number(argValue("--calls") ?? "3")
 const prompt =
   argValue("--prompt") ?? "In one sentence: what is an x402 payment?"
@@ -54,11 +70,13 @@ console.log(
 
 let outcome: "completed" | "cap_reached" | "approval_pending" = "completed"
 let degraded = false
+const settleTally: Record<string, number> = {}
 for (let i = 1; i <= calls; i++) {
   const result = await runMeteredCall({ config, meter, prompt })
   switch (result.status) {
     case "paid": {
       const settle = result.settlementStatus ?? "unknown"
+      settleTally[settle] = (settleTally[settle] ?? 0) + 1
       const delivered = deliveredUrl(result.body)
       const preview =
         delivered ?? JSON.stringify(result.body ?? "").slice(0, 80)
@@ -70,6 +88,7 @@ for (let i = 1; i <= calls; i++) {
     case "paid_but_error": {
       const preview = JSON.stringify(result.body ?? "").slice(0, 80)
       const settle = result.settlementStatus ?? "unknown"
+      settleTally[settle] = (settleTally[settle] ?? 0) + 1
       console.log(
         `call ${i}/${calls}: authorized ${microsToMoney(result.amountMicros)} but the endpoint returned an error (intent ${settle}; a failed intent means Catena released the funds): ${preview}`,
       )
@@ -101,10 +120,14 @@ for (let i = 1; i <= calls; i++) {
   if (outcome !== "completed") break
 }
 
+const tally = Object.entries(settleTally)
+  .map(([status, count]) => `${count} ${status}`)
+  .join(", ")
 console.log(`\nSpend: ${meter.summary()}`)
+console.log(`Settlement: ${tally || "no payments"}`)
 console.log(
   outcome === "completed"
-    ? "DONE: all calls settled under the cap."
+    ? "DONE: all calls finished under the cap."
     : outcome === "cap_reached"
       ? "DONE: cap enforced; the over-cap call was refused before any payment."
       : "WAITING: a call is parked for human approval; nothing was charged for it.",

@@ -85,11 +85,19 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
   } catch (error) {
     // Non-zero exit still prints the JSON result (e.g. approvalPending);
     // fall through to parsing when stdout is present.
-    const failed = error as { stdout?: string; stderr?: string }
+    const failed = error as {
+      stdout?: string
+      stderr?: string
+      killed?: boolean
+      signal?: string
+    }
     if (!failed.stdout) {
+      const killed = failed.killed ?? failed.signal
       return {
         status: "failed",
-        reason: failed.stderr?.trim() ?? String(error),
+        reason: killed
+          ? `CLI was killed (${failed.signal ?? "timeout"}) before reporting a result; a payment intent may already be in flight - check the Catena console before retrying`
+          : (failed.stderr?.trim() ?? String(error)),
       }
     }
     stdout = failed.stdout

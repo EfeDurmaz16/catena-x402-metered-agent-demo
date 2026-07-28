@@ -46,6 +46,22 @@ describe("probeQuote", () => {
     })
   })
 
+  it("rejects a challenge in an unexpected asset (fail closed)", async () => {
+    await withEndpoint(
+      { asset: "0x000000000000000000000000000000000000beef" },
+      async (endpoint) => {
+        await expect(
+          probeQuote({
+            url: endpoint.url,
+            body: BODY,
+            network: TEST_NETWORK,
+            asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          }),
+        ).rejects.toThrow(/No exact-scheme challenge/)
+      },
+    )
+  })
+
   it("rejects a challenge for a different network (e.g. mainnet)", async () => {
     await withEndpoint({ network: "eip155:8453" }, async (endpoint) => {
       await expect(

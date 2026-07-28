@@ -48,6 +48,11 @@ const envSchema = z.object({
   PER_CALL_MAX_USD: money.default("$0.025"),
   /** Only Base Sepolia challenges are paid; anything else fails closed. */
   X402_NETWORK: z.literal("eip155:84532").default("eip155:84532"),
+  /** Only this asset is paid (Circle's Base Sepolia USDC, 6 decimals): the
+   * atomic-units-equal-micro-dollars arithmetic depends on it. */
+  X402_ASSET: z
+    .literal("0x036CbD53842c5426634e7929541eC2318f3dCF7e")
+    .default("0x036CbD53842c5426634e7929541eC2318f3dCF7e"),
   /** Override for tests; the released Catena CLI binary otherwise. */
   CATENA_BIN: z.string().min(1).default("catena"),
 })

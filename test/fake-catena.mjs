@@ -43,6 +43,18 @@ const results = {
       poll_url: "/poll/job1",
     }),
   },
+  "paid-error": {
+    paid: true,
+    payment: {
+      intentId: "int_test",
+      amountAtomicUsdc: "1000",
+      payTo: "0xpayto",
+    },
+    body: JSON.stringify({
+      error: "Unexpected error",
+      message: "upstream model failed after payment",
+    }),
+  },
   garbage: "not json at all",
 }
 
@@ -71,6 +83,11 @@ if (process.argv[2] === "intents") {
 }
 
 const key = process.env.FAKE_RESULT ?? "paid"
+if (key === "hard-fail") {
+  // Non-zero exit with NO stdout: models the CLI dying before any result.
+  process.stderr.write(process.env.FAKE_STDERR ?? "catena: not logged in")
+  process.exit(1)
+}
 const result = results[key]
 console.log(typeof result === "string" ? result : JSON.stringify(result))
 process.exit(Number(process.env.FAKE_EXIT ?? "0"))

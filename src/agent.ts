@@ -1,5 +1,6 @@
 import { payX402, readIntent } from "./catena-cli.js"
 import { probeQuote } from "./challenge.js"
+import { microsToMoney, moneyToMicros } from "./config.js"
 import type { Config } from "./config.js"
 import type { SpendMeter } from "./meter.js"
 
@@ -82,6 +83,7 @@ export async function runMeteredCall(options: {
       url: config.ENDPOINT_URL,
       body: requestBody,
       network: config.X402_NETWORK,
+      asset: config.X402_ASSET,
       ...(fetchImpl ? { fetchImpl } : {}),
     })
   } catch (error) {
@@ -95,12 +97,19 @@ export async function runMeteredCall(options: {
     return { status: "cap_reached", priceMicros: quote.amountMicros }
   }
 
+  // Authorize the CLI for at most the smaller of the per-call ceiling and
+  // the remaining run budget, so even a challenge that changed since the
+  // quote cannot push the total past the cap.
+  const perCallMicros = moneyToMicros(config.PER_CALL_MAX_USD)
+  const remainingMicros = meter.capMicros - meter.totalMicros
+  const authorizedMicros =
+    perCallMicros < remainingMicros ? perCallMicros : remainingMicros
   const outcome = await payX402({
     bin: config.CATENA_BIN,
     url: config.ENDPOINT_URL,
     accountId: config.CATENA_ACCOUNT_ID,
     // CLI expects a plain USD decimal, e.g. "0.002" for $0.002.
-    maxAmountUsd: config.PER_CALL_MAX_USD.slice(1),
+    maxAmountUsd: microsToMoney(authorizedMicros).slice(1),
     requestBody,
   })
 
@@ -129,6 +138,17 @@ export async function runMeteredCall(options: {
         intervalMs: options.pollIntervalMs ?? 3000,
         maxMs: options.pollMaxMs ?? 180_000,
       })
+    }
+  }
+
+  // A queued job that was never resolved (missing intent id or signature to
+  // poll with, or the poll timed out while still queued) must not read as a
+  // delivered success: convert it to an error body so it reports as
+  // paid_but_error and the runner exits non-zero.
+  if (job && asQueuedJob(body)) {
+    body = {
+      error:
+        "paid job result was never retrieved (missing intent/signature to poll, or poll timed out while still queued)",
     }
   }
 
@@ -184,8 +204,19 @@ async function pollJob(options: {
         accept: "application/json",
       },
     })
-    last = await response.json().catch(() => undefined)
-    const status = (last as { status?: unknown } | undefined)?.status
+    const parsed: unknown = await response.json().catch(() => undefined)
+    // A transient gateway error (non-JSON body) is not a terminal answer:
+    // keep polling until maxMs. A JSON object on a non-ok response IS the
+    // seller's answer (e.g. a permanent failure) and terminates immediately;
+    // isErrorBody downstream classifies it.
+    if (typeof parsed !== "object" || parsed === null) {
+      last = {
+        error: `poll failed: HTTP ${response.status} with an unreadable body`,
+      }
+      continue
+    }
+    last = parsed
+    const status = (parsed as { status?: unknown }).status
     if (status !== "queued" && status !== "in_progress") return last
   }
   return last
