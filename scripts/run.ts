@@ -38,6 +38,7 @@ console.log(
 )
 
 let outcome: "completed" | "cap_reached" | "approval_pending" = "completed"
+let degraded = false
 for (let i = 1; i <= calls; i++) {
   const result = await runMeteredCall({ config, meter, prompt })
   switch (result.status) {
@@ -46,6 +47,14 @@ for (let i = 1; i <= calls; i++) {
       console.log(
         `call ${i}/${calls}: paid ${microsToMoney(result.amountMicros)} -> ${preview}`,
       )
+      break
+    }
+    case "paid_but_error": {
+      const preview = JSON.stringify(result.body ?? "").slice(0, 80)
+      console.log(
+        `call ${i}/${calls}: paid ${microsToMoney(result.amountMicros)} but the endpoint returned an error (charged without delivery): ${preview}`,
+      )
+      degraded = true
       break
     }
     case "cap_reached":
@@ -81,3 +90,9 @@ console.log(
       ? "DONE: cap enforced; the over-cap call was refused before any payment."
       : "WAITING: a call is parked for human approval; nothing was charged for it.",
 )
+if (degraded) {
+  console.error(
+    "WARNING: at least one settled call returned an error body (charged without delivery); the endpoint, not the payment leg, failed.",
+  )
+  process.exitCode = 1
+}

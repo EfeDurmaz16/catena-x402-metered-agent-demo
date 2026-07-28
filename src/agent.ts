@@ -5,10 +5,31 @@ import type { SpendMeter } from "./meter.js"
 
 export type MeteredCallResult =
   | { status: "paid"; amountMicros: bigint; body: unknown }
+  /** The payment settled but the endpoint returned an error body: money
+   * moved without delivery. Surfaced distinctly so a run never reads a
+   * charged failure as success. */
+  | { status: "paid_but_error"; amountMicros: bigint; body: unknown }
   | { status: "cap_reached"; priceMicros: bigint }
   | { status: "approval_pending"; intentId: string | undefined }
   | { status: "setup_required"; createCommand: string | undefined }
   | { status: "failed"; reason: string }
+
+/** BlockRun-style error bodies: `{"error": ...}` with no choices. */
+function isErrorBody(body: unknown): boolean {
+  if (typeof body === "string") {
+    try {
+      return isErrorBody(JSON.parse(body))
+    } catch {
+      return false
+    }
+  }
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    "error" in body &&
+    !("choices" in body)
+  )
+}
 
 /**
  * One metered call: quote the price unpaid, refuse it if it would break the
@@ -32,6 +53,7 @@ export async function runMeteredCall(options: {
   const requestBody = {
     model: config.MODEL,
     messages: [{ role: "user", content: prompt }],
+    max_tokens: 128,
   }
 
   let quote
@@ -64,7 +86,12 @@ export async function runMeteredCall(options: {
 
   if (outcome.status !== "paid") return outcome
   // Trust the CLI's reported charge; fall back to the quote when absent.
+  // The charge is recorded either way: the money moved even if the endpoint
+  // then failed to deliver.
   const amountMicros = outcome.amountMicros ?? quote.amountMicros
   meter.record(config.MODEL, amountMicros)
+  if (isErrorBody(outcome.body)) {
+    return { status: "paid_but_error", amountMicros, body: outcome.body }
+  }
   return { status: "paid", amountMicros, body: outcome.body }
 }
