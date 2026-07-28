@@ -9,7 +9,11 @@ import { appendFileSync } from "node:fs"
 const results = {
   paid: {
     paid: true,
-    payment: { id: "int_test", amount: "1000", recipient: "0xpayto" },
+    payment: {
+      intentId: "int_test",
+      amountAtomicUsdc: "1000",
+      payTo: "0xpayto",
+    },
     body: { choices: [{ message: { content: "hello from the paid model" } }] },
   },
   approval: {
@@ -36,7 +40,14 @@ if (process.argv[2] === "intents") {
   console.log(
     JSON.stringify({
       id: process.argv[4] ?? "int_test",
-      status: process.env.FAKE_INTENT_STATUS ?? "completed",
+      status: "completed",
+      data: {
+        x402: {
+          transaction: {
+            status: process.env.FAKE_INTENT_STATUS ?? "completed",
+          },
+        },
+      },
     }),
   )
   process.exit(0)

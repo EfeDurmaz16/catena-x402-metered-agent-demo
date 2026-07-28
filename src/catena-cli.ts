@@ -17,9 +17,9 @@ const resultSchema = z.looseObject({
   paid: z.boolean().optional(),
   payment: z
     .looseObject({
-      id: z.string().optional(),
-      amount: z.string().optional(),
-      recipient: z.string().optional(),
+      intentId: z.string().optional(),
+      amountAtomicUsdc: z.string().optional(),
+      payTo: z.string().optional(),
     })
     .optional(),
   approvalPending: z
@@ -108,11 +108,11 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
     return { status: "failed", reason: "network mismatch (see CLI output)" }
   }
   if (result.paid) {
-    const amount = result.payment?.amount
+    const amount = result.payment?.amountAtomicUsdc
     return {
       status: "paid",
       amountMicros: amount && /^\d+$/.test(amount) ? BigInt(amount) : undefined,
-      intentId: result.payment?.id,
+      intentId: result.payment?.intentId,
       body: result.body,
     }
   }
@@ -140,9 +140,25 @@ export async function getIntentStatus(
       { timeout: 60_000 },
     )
     const intent = z
-      .looseObject({ status: z.string().optional() })
+      .looseObject({
+        status: z.string().optional(),
+        data: z
+          .looseObject({
+            x402: z
+              .looseObject({
+                transaction: z
+                  .looseObject({ status: z.string().optional() })
+                  .optional(),
+              })
+              .optional(),
+          })
+          .optional(),
+      })
       .parse(JSON.parse(stdout))
-    return intent.status
+    // The intent completing only means the x402 exchange happened; whether
+    // funds actually move is the inner transaction's status (pending until
+    // the seller settles on-chain, failed when it never does).
+    return intent.data?.x402?.transaction?.status ?? intent.status
   } catch {
     return undefined
   }
