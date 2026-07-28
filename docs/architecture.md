@@ -1,5 +1,9 @@
 # Architecture
 
+![Stack](diagrams/stack.svg)
+
+![Where enforcement lives](diagrams/enforcement.svg)
+
 One paid call, end to end:
 
 ```

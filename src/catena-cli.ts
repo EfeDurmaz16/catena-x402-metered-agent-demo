@@ -15,6 +15,7 @@ const execFileAsync = promisify(execFile)
 /** Shapes documented by `catena guide`; unknown fields pass through. */
 const resultSchema = z.looseObject({
   paid: z.boolean().optional(),
+  retryFailed: z.boolean().optional(),
   payment: z
     .looseObject({
       intentId: z.string().optional(),
@@ -45,6 +46,12 @@ const resultSchema = z.looseObject({
 export type PayOutcome =
   | {
       status: "paid"
+      amountMicros: bigint | undefined
+      intentId: string | undefined
+      body: unknown
+    }
+  | {
+      status: "paid_but_error"
       amountMicros: bigint | undefined
       intentId: string | undefined
       body: unknown
@@ -96,7 +103,7 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
       return {
         status: "failed",
         reason: killed
-          ? `CLI was killed (${failed.signal ?? "timeout"}) before reporting a result; a payment intent may already be in flight - check the Catena console before retrying`
+          ? `CLI timed out or was killed (${failed.signal ?? "unknown"}) before reporting a result; a payment intent may already be in flight - check the Catena console before retrying`
           : (failed.stderr?.trim() ?? String(error)),
       }
     }
@@ -129,10 +136,23 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
   }
   if (result.paid) {
     const amount = result.payment?.amountAtomicUsdc
+    const amountMicros =
+      amount && /^\d+$/.test(amount) ? BigInt(amount) : undefined
+    const intentId = result.payment?.intentId
+    // CLI: paid:true + retryFailed:true means settlement authorized but the
+    // paid HTTP retry threw before a body came back.
+    if (result.retryFailed) {
+      return {
+        status: "paid_but_error",
+        amountMicros,
+        intentId,
+        body: result.error ?? result.body ?? { error: "paid retry failed" },
+      }
+    }
     return {
       status: "paid",
-      amountMicros: amount && /^\d+$/.test(amount) ? BigInt(amount) : undefined,
-      intentId: result.payment?.intentId,
+      amountMicros,
+      intentId,
       body: result.body,
     }
   }

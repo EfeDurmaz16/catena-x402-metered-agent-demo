@@ -30,7 +30,8 @@ export type MeteredCallResult =
   | { status: "setup_required"; createCommand: string | undefined }
   | { status: "failed"; reason: string }
 
-/** BlockRun-style error bodies: `{"error": ...}` with no choices. */
+/** BlockRun-style error bodies: `{"error": ...}` with no choices, or a
+ * terminal job status that is not a successful delivery. */
 function isErrorBody(body: unknown): boolean {
   if (typeof body === "string") {
     try {
@@ -39,12 +40,25 @@ function isErrorBody(body: unknown): boolean {
       return false
     }
   }
-  return (
-    typeof body === "object" &&
-    body !== null &&
-    "error" in body &&
-    !("choices" in body)
-  )
+  if (typeof body !== "object" || body === null) return false
+  if ("error" in body && !("choices" in body)) return true
+  const status = (body as { status?: unknown }).status
+  return status === "failed" || status === "cancelled" || status === "canceled"
+}
+
+/** True when a body still describes an unresolved async job. */
+function isUnresolvedJob(body: unknown): boolean {
+  let parsed = body
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed)
+    } catch {
+      return false
+    }
+  }
+  if (typeof parsed !== "object" || parsed === null) return false
+  if (!("status" in parsed)) return false
+  return parsed.status === "queued" || parsed.status === "in_progress"
 }
 
 /**
@@ -113,6 +127,19 @@ export async function runMeteredCall(options: {
     requestBody,
   })
 
+  if (outcome.status === "paid_but_error") {
+    const amountMicros = outcome.amountMicros ?? quote.amountMicros
+    meter.record(config.MODEL, amountMicros)
+    const settlementStatus = outcome.intentId
+      ? (await readIntent(config.CATENA_BIN, outcome.intentId)).settlementStatus
+      : undefined
+    return {
+      status: "paid_but_error",
+      amountMicros,
+      settlementStatus,
+      body: outcome.body,
+    }
+  }
   if (outcome.status !== "paid") return outcome
   // Trust the CLI's reported charge; fall back to the quote when absent.
   // The meter records it either way: if settlement later fails, Catena
@@ -131,21 +158,28 @@ export async function runMeteredCall(options: {
       outcome.intentId,
     )
     if (paymentSignature) {
-      body = await pollJob({
-        pollUrl: new URL(job.pollUrl, config.ENDPOINT_URL).toString(),
-        paymentSignature,
-        fetchImpl: fetchImpl ?? fetch,
-        intervalMs: options.pollIntervalMs ?? 3000,
-        maxMs: options.pollMaxMs ?? 180_000,
-      })
+      const pollUrl = resolveSameOriginPollUrl(job.pollUrl, config.ENDPOINT_URL)
+      if (!pollUrl) {
+        body = {
+          error:
+            "paid job poll_url is not same-origin with the endpoint; refusing to follow it",
+        }
+      } else {
+        body = await pollJob({
+          pollUrl,
+          paymentSignature,
+          fetchImpl: fetchImpl ?? fetch,
+          intervalMs: options.pollIntervalMs ?? 3000,
+          maxMs: options.pollMaxMs ?? 180_000,
+        })
+      }
     }
   }
 
-  // A queued job that was never resolved (missing intent id or signature to
-  // poll with, or the poll timed out while still queued) must not read as a
-  // delivered success: convert it to an error body so it reports as
-  // paid_but_error and the runner exits non-zero.
-  if (job && asQueuedJob(body)) {
+  // A queued/in_progress body that was never resolved (missing intent id
+  // or signature, cross-origin poll_url, or poll timed out) must not read
+  // as a delivered success.
+  if (job && isUnresolvedJob(body)) {
     body = {
       error:
         "paid job result was never retrieved (missing intent/signature to poll, or poll timed out while still queued)",
@@ -161,6 +195,26 @@ export async function runMeteredCall(options: {
     return { status: "paid_but_error", amountMicros, settlementStatus, body }
   }
   return { status: "paid", amountMicros, settlementStatus, body }
+}
+
+/** Resolve a seller poll_url only when it stays on the endpoint's origin.
+ * Absolute or protocol-relative URLs to other hosts are refused so a
+ * hostile body cannot exfiltrate the payment signature via SSRF. */
+function resolveSameOriginPollUrl(
+  pollUrl: string,
+  endpointUrl: string,
+): string | undefined {
+  try {
+    const base = new URL(endpointUrl)
+    const resolved = new URL(pollUrl, endpointUrl)
+    if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+      return undefined
+    }
+    if (resolved.origin !== base.origin) return undefined
+    return resolved.toString()
+  } catch {
+    return undefined
+  }
 }
 
 /** A 202-style queued/in-progress job body carrying a poll_url. */
@@ -218,6 +272,11 @@ async function pollJob(options: {
     last = parsed
     const status = (parsed as { status?: unknown }).status
     if (status !== "queued" && status !== "in_progress") return last
+  }
+  // Still transitional at timeout: return an error body, never the last
+  // in_progress object (which lacks poll_url and would look like success).
+  if (isUnresolvedJob(last)) {
+    return { error: "poll timed out before a terminal status" }
   }
   return last
 }

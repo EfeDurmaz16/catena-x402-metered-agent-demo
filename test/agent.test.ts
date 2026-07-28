@@ -28,7 +28,13 @@ function testConfig(endpointUrl: string, env: NodeJS.ProcessEnv = {}) {
 
 describe("payX402 result mapping", () => {
   function run(
-    fakeResult: "paid" | "approval" | "counterparty" | "garbage" | "hard-fail",
+    fakeResult:
+      | "paid"
+      | "approval"
+      | "counterparty"
+      | "garbage"
+      | "hard-fail"
+      | "retry-failed",
     exit: "0" | "1" = "0",
   ) {
     vi.stubEnv("FAKE_RESULT", fakeResult)
@@ -69,6 +75,15 @@ describe("payX402 result mapping", () => {
   it("fails closed on unrecognized output", async () => {
     const outcome = await run("garbage")
     expect(outcome.status).toBe("failed")
+  })
+
+  it("maps paid+retryFailed to paid_but_error (not success)", async () => {
+    const outcome = await run("retry-failed", "1")
+    expect(outcome.status).toBe("paid_but_error")
+    if (outcome.status === "paid_but_error") {
+      expect(outcome.amountMicros).toBe(1000n)
+      expect(outcome.intentId).toBe("int_test")
+    }
   })
 })
 
@@ -293,6 +308,34 @@ describe("poll resilience", () => {
         pollMaxMs: 200,
       })
       expect(result.status).toBe("paid_but_error")
+    } finally {
+      await endpoint.close()
+    }
+  })
+
+  it("reports paid_but_error when polls stay in_progress until timeout", async () => {
+    const endpoint = await startFakeEndpoint({
+      amount: "21000",
+      queuedPolls: 1000,
+    })
+    vi.stubEnv("FAKE_RESULT", "paid-queued")
+    try {
+      const config = testConfig(endpoint.url, {
+        ENDPOINT_KIND: "image",
+        PER_CALL_MAX_USD: "$0.025",
+      })
+      const meter = new SpendMeter(moneyToMicros("$0.05"))
+      const result = await runMeteredCall({
+        config,
+        meter,
+        prompt: "a robot",
+        pollIntervalMs: 10,
+        pollMaxMs: 80,
+      })
+      expect(result.status).toBe("paid_but_error")
+      if (result.status === "paid_but_error") {
+        expect(JSON.stringify(result.body)).toContain("timed out")
+      }
     } finally {
       await endpoint.close()
     }

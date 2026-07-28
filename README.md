@@ -5,30 +5,18 @@ A metered agent that consumes a real pay-per-request x402 endpoint
 var away) and pays each call from a Catena account, with a configured spend
 cap enforced before any money moves.
 
+![Stack: agent → BlockRun x402 → catena CLI → Catena policy → USDC](docs/diagrams/stack.svg)
+
+![Client spend cap vs Catena platform policy](docs/diagrams/enforcement.svg)
+
 Each call follows the x402 cycle: request → 402 challenge → pay → retry →
-response. The runner drives repeated calls, tracks a running spend total in
-exact bigint micro-dollars, and refuses the first call that would push the
-total past the cap. Payments draw from a Catena-governed wallet account, so
-the platform's own controls (counterparty allowlist, spend limits, approval
-thresholds) rule every spend independently of this repo's bookkeeping.
+response. The runner tracks a running spend total in exact bigint
+micro-dollars and refuses the first call that would push the total past the
+cap. Payments draw from a Catena-governed wallet account, so the platform's
+own controls (counterparty allowlist, spend limits, approval thresholds)
+rule every spend independently of this repo's bookkeeping.
 
-## How a call works
-
-1. **Quote unpaid.** POST the request without payment; decode the price from
-   the 402 challenge's `PAYMENT-REQUIRED` header. Nothing is charged.
-2. **Cap check.** If `total + price > SPEND_CAP_USD`, refuse before paying.
-3. **Pay via the Catena CLI.** `catena x402 --account ... --maxAmount ...`
-   pays the challenge from the Catena account; the CLI's `--maxAmount` caps
-   the single call as defense in depth. A charge over the policy's approval
-   threshold parks as an intent for a human to approve instead of paying.
-4. **Deliver.** Async endpoints answer the paid retry with a queued job;
-   the agent polls it with the payment's own signature (read back via
-   `catena intents get`) until the result is delivered. The seller settles
-   on the completing poll: pay-on-delivery.
-5. **Reconcile.** "Paid" in the x402 exchange is an authorization, not
-   settled funds. The agent reads the intent back and reports the inner
-   transaction's status; a seller that fails to deliver leaves a failed
-   intent and Catena releases the reserved funds.
+More detail: [docs/architecture.md](docs/architecture.md).
 
 ## Setup (sandbox, ~10 minutes)
 
@@ -84,3 +72,7 @@ endpoint, and the released Catena CLI as a customer payment surface. It does
 not implement, reproduce, or reach into Catena's policy engine, platform core,
 or SDK internals; the spend meter here is client-side bookkeeping, and the
 authoritative controls stay on the platform side.
+
+## License
+
+MIT

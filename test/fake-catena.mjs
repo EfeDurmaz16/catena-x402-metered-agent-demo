@@ -55,6 +55,16 @@ const results = {
       message: "upstream model failed after payment",
     }),
   },
+  "retry-failed": {
+    paid: true,
+    retryFailed: true,
+    payment: {
+      intentId: "int_test",
+      amountAtomicUsdc: "1000",
+      payTo: "0xpayto",
+    },
+    error: "paid HTTP retry threw before a body came back",
+  },
   garbage: "not json at all",
 }
 
