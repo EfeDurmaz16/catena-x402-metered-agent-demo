@@ -84,7 +84,7 @@ for (let i = 1; i <= calls; i++) {
       break
     case "approval_pending":
       console.log(
-        `call ${i}/${calls}: PARKED for human approval (intent ${result.intentId ?? "unknown"}). Approve it in the Catena console, then re-run the same command; the retry consumes the approval.`,
+        `call ${i}/${calls}: PARKED for human approval (intent ${result.intentId ?? "unknown"})${result.reason ? `\n  reason: ${result.reason}` : ""}\n  Approve it in the Catena console, then re-run the same command; the retry consumes the approval.`,
       )
       outcome = "approval_pending"
       break

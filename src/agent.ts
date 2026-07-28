@@ -21,7 +21,11 @@ export type MeteredCallResult =
       body: unknown
     }
   | { status: "cap_reached"; priceMicros: bigint }
-  | { status: "approval_pending"; intentId: string | undefined }
+  | {
+      status: "approval_pending"
+      intentId: string | undefined
+      reason: string | undefined
+    }
   | { status: "setup_required"; createCommand: string | undefined }
   | { status: "failed"; reason: string }
 

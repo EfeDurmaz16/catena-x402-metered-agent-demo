@@ -7,6 +7,8 @@ describe("money", () => {
     expect(moneyToMicros("$0.001")).toBe(1000n)
     expect(moneyToMicros("$1")).toBe(1_000_000n)
     expect(microsToMoney(1000n)).toBe("$0.001")
+    expect(microsToMoney(0n)).toBe("$0")
+    expect(microsToMoney(1_000_000n)).toBe("$1")
     expect(microsToMoney(12_340_000n)).toBe("$12.34")
   })
 

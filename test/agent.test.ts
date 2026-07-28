@@ -51,6 +51,9 @@ describe("payX402 result mapping", () => {
       status: "approval_pending",
       intentId: "int_approval",
     })
+    if (outcome.status === "approval_pending") {
+      expect(outcome.reason).toContain("approval threshold")
+    }
   })
 
   it("maps a missing counterparty to setup_required with the create command", async () => {

@@ -23,7 +23,11 @@ const resultSchema = z.looseObject({
     })
     .optional(),
   approvalPending: z
-    .looseObject({ id: z.string().optional() })
+    .looseObject({
+      intentId: z.string().optional(),
+      expiresAt: z.string().optional(),
+      reasons: z.array(z.string()).optional(),
+    })
     .optional()
     .nullable(),
   counterpartyNotFound: z
@@ -45,7 +49,11 @@ export type PayOutcome =
       intentId: string | undefined
       body: unknown
     }
-  | { status: "approval_pending"; intentId: string | undefined }
+  | {
+      status: "approval_pending"
+      intentId: string | undefined
+      reason: string | undefined
+    }
   | { status: "setup_required"; createCommand: string | undefined }
   | { status: "failed"; reason: string }
 
@@ -96,7 +104,11 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
     }
   }
   if (result.approvalPending) {
-    return { status: "approval_pending", intentId: result.approvalPending.id }
+    return {
+      status: "approval_pending",
+      intentId: result.approvalPending.intentId,
+      reason: result.approvalPending.reasons?.[0],
+    }
   }
   if (result.counterpartyNotFound) {
     return {

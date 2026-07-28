@@ -18,7 +18,11 @@ const results = {
   },
   approval: {
     paid: false,
-    approvalPending: { id: "int_approval", expiresAt: "2026-01-01T00:00:00Z" },
+    approvalPending: {
+      intentId: "int_approval",
+      expiresAt: "2026-01-01T00:00:00Z",
+      reasons: ["approval threshold exceeded: amount $0.021 against $0.015"],
+    },
   },
   counterparty: {
     paid: false,

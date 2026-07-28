@@ -24,7 +24,7 @@ export function moneyToMicros(money: string): bigint {
 export function microsToMoney(micros: bigint): string {
   const whole = micros / 1_000_000n
   const fraction = (micros % 1_000_000n).toString().padStart(6, "0")
-  return `$${whole}.${fraction}`.replace(/0+$/, "").replace(/\.$/, ".0")
+  return `$${whole}.${fraction}`.replace(/0+$/, "").replace(/\.$/, "")
 }
 
 const money = z.string().regex(/^\$\d+(\.\d{1,6})?$/, "expected $x.yz")
