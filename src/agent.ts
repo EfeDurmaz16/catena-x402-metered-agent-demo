@@ -1,4 +1,4 @@
-import { getIntentStatus, payX402 } from "./catena-cli.js"
+import { payX402, readIntent } from "./catena-cli.js"
 import { probeQuote } from "./challenge.js"
 import type { Config } from "./config.js"
 import type { SpendMeter } from "./meter.js"
@@ -53,6 +53,8 @@ export async function runMeteredCall(options: {
   meter: SpendMeter
   prompt: string
   fetchImpl?: typeof fetch
+  pollIntervalMs?: number
+  pollMaxMs?: number
 }): Promise<MeteredCallResult> {
   const { config, meter, prompt, fetchImpl } = options
   if (!config.CATENA_ACCOUNT_ID) {
@@ -61,11 +63,14 @@ export async function runMeteredCall(options: {
       reason: "CATENA_ACCOUNT_ID is required to pay (see .env.example)",
     }
   }
-  const requestBody = {
-    model: config.MODEL,
-    messages: [{ role: "user", content: prompt }],
-    max_tokens: 128,
-  }
+  const requestBody =
+    config.ENDPOINT_KIND === "image"
+      ? { model: config.MODEL, prompt, size: "1024x1024" }
+      : {
+          model: config.MODEL,
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 128,
+        }
 
   let quote
   try {
@@ -101,18 +106,83 @@ export async function runMeteredCall(options: {
   // releases the reserved funds and the meter has merely been conservative.
   const amountMicros = outcome.amountMicros ?? quote.amountMicros
   meter.record(config.MODEL, amountMicros)
+
+  // Async endpoints (image generation) answer the paid retry with a queued
+  // job and a poll_url; the result is fetched by polling with the payment's
+  // own signature, and the seller settles on the completing poll.
+  let body = outcome.body
+  const job = asQueuedJob(body)
+  if (job && outcome.intentId) {
+    const { paymentSignature } = await readIntent(
+      config.CATENA_BIN,
+      outcome.intentId,
+    )
+    if (paymentSignature) {
+      body = await pollJob({
+        pollUrl: new URL(job.pollUrl, config.ENDPOINT_URL).toString(),
+        paymentSignature,
+        fetchImpl: fetchImpl ?? fetch,
+        intervalMs: options.pollIntervalMs ?? 3000,
+        maxMs: options.pollMaxMs ?? 180_000,
+      })
+    }
+  }
+
   // Reconcile with the platform: "paid" in the x402 exchange is an
   // authorization; the intent's status says whether funds actually settled.
   const settlementStatus = outcome.intentId
-    ? await getIntentStatus(config.CATENA_BIN, outcome.intentId)
+    ? (await readIntent(config.CATENA_BIN, outcome.intentId)).settlementStatus
     : undefined
-  if (isErrorBody(outcome.body)) {
-    return {
-      status: "paid_but_error",
-      amountMicros,
-      settlementStatus,
-      body: outcome.body,
+  if (isErrorBody(body)) {
+    return { status: "paid_but_error", amountMicros, settlementStatus, body }
+  }
+  return { status: "paid", amountMicros, settlementStatus, body }
+}
+
+/** A 202-style queued/in-progress job body carrying a poll_url. */
+function asQueuedJob(body: unknown): { pollUrl: string } | undefined {
+  let parsed = body
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed)
+    } catch {
+      return undefined
     }
   }
-  return { status: "paid", amountMicros, settlementStatus, body: outcome.body }
+  const job = parsed as { status?: unknown; poll_url?: unknown } | undefined
+  if (
+    (job?.status === "queued" || job?.status === "in_progress") &&
+    typeof job.poll_url === "string"
+  ) {
+    return { pollUrl: job.poll_url }
+  }
+  return undefined
+}
+
+/** Poll an async job until it leaves queued/in_progress or time runs out.
+ * Sends the payment's own signature on every poll; the seller re-verifies
+ * it and settles on the completing poll. */
+async function pollJob(options: {
+  pollUrl: string
+  paymentSignature: string
+  fetchImpl: typeof fetch
+  intervalMs: number
+  maxMs: number
+}): Promise<unknown> {
+  const { pollUrl, paymentSignature, fetchImpl, intervalMs, maxMs } = options
+  const startedAt = Date.now()
+  let last: unknown = { error: "poll timed out before a terminal status" }
+  while (Date.now() - startedAt < maxMs) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    const response = await fetchImpl(pollUrl, {
+      headers: {
+        "payment-signature": paymentSignature,
+        accept: "application/json",
+      },
+    })
+    last = await response.json().catch(() => undefined)
+    const status = (last as { status?: unknown } | undefined)?.status
+    if (status !== "queued" && status !== "in_progress") return last
+  }
+  return last
 }

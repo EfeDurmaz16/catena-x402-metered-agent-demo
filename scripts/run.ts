@@ -16,6 +16,21 @@ try {
   // no .env file; environment variables may be set directly
 }
 
+/** The delivered asset URL of a completed image job, when present. */
+function deliveredUrl(body: unknown): string | undefined {
+  let parsed = body
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed)
+    } catch {
+      return undefined
+    }
+  }
+  const data = (parsed as { data?: { url?: unknown }[] } | undefined)?.data
+  const url = data?.[0]?.url
+  return typeof url === "string" ? url : undefined
+}
+
 function argValue(flag: string): string | undefined {
   const index = process.argv.indexOf(flag)
   return index >= 0 ? process.argv[index + 1] : undefined
@@ -43,8 +58,10 @@ for (let i = 1; i <= calls; i++) {
   const result = await runMeteredCall({ config, meter, prompt })
   switch (result.status) {
     case "paid": {
-      const preview = JSON.stringify(result.body ?? "").slice(0, 80)
       const settle = result.settlementStatus ?? "unknown"
+      const delivered = deliveredUrl(result.body)
+      const preview =
+        delivered ?? JSON.stringify(result.body ?? "").slice(0, 80)
       console.log(
         `call ${i}/${calls}: paid ${microsToMoney(result.amountMicros)} (intent ${settle}) -> ${preview}`,
       )

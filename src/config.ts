@@ -32,18 +32,20 @@ const money = z.string().regex(/^\$\d+(\.\d{1,6})?$/, "expected $x.yz")
 const envSchema = z.object({
   /** Catena account the CLI pays from. Required to actually pay. */
   CATENA_ACCOUNT_ID: z.string().min(1).optional(),
+  /** What the paid endpoint serves; shapes the request body. */
+  ENDPOINT_KIND: z.enum(["image", "chat"]).default("image"),
   /** The paid x402 endpoint the agent consumes. */
   ENDPOINT_URL: z
     .url()
-    .default("https://testnet.blockrun.ai/api/v1/chat/completions"),
+    .default("https://testnet.blockrun.ai/api/v1/images/generations"),
   /** Model requested per call; testnet models are flat-priced per request. */
-  MODEL: z.string().min(1).default("openai/gpt-oss-20b"),
+  MODEL: z.string().min(1).default("openai/gpt-image-1"),
   /** Total the runner may spend across all calls in one run. */
   SPEND_CAP_USD: money
-    .default("$0.005")
+    .default("$0.05")
     .refine((v) => moneyToMicros(v) > 0n, "cap must be greater than 0"),
   /** Per-call ceiling passed to the CLI as --maxAmount (defense in depth). */
-  PER_CALL_MAX_USD: money.default("$0.002"),
+  PER_CALL_MAX_USD: money.default("$0.025"),
   /** Only Base Sepolia challenges are paid; anything else fails closed. */
   X402_NETWORK: z.literal("eip155:84532").default("eip155:84532"),
   /** Override for tests; the released Catena CLI binary otherwise. */

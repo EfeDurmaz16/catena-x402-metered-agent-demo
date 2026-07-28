@@ -1,8 +1,9 @@
 # catena-x402-metered-agent-demo
 
 A metered agent that consumes a real pay-per-request x402 endpoint
-(BlockRun's `/chat/completions` on Base Sepolia) and pays each call from a
-Catena account, with a configured spend cap enforced before any money moves.
+(BlockRun's image-generation API on Base Sepolia; the chat API is one env
+var away) and pays each call from a Catena account, with a configured spend
+cap enforced before any money moves.
 
 Each call follows the x402 cycle: request → 402 challenge → pay → retry →
 response. The runner drives repeated calls, tracks a running spend total in
@@ -20,7 +21,14 @@ thresholds) rule every spend independently of this repo's bookkeeping.
    pays the challenge from the Catena account; the CLI's `--maxAmount` caps
    the single call as defense in depth. A charge over the policy's approval
    threshold parks as an intent for a human to approve instead of paying.
-4. **Record.** The settled amount reported by the CLI is added to the total.
+4. **Deliver.** Async endpoints answer the paid retry with a queued job;
+   the agent polls it with the payment's own signature (read back via
+   `catena intents get`) until the result is delivered. The seller settles
+   on the completing poll: pay-on-delivery.
+5. **Reconcile.** "Paid" in the x402 exchange is an authorization, not
+   settled funds. The agent reads the intent back and reports the inner
+   transaction's status; a seller that fails to deliver leaves a failed
+   intent and Catena releases the reserved funds.
 
 ## Setup (sandbox, ~10 minutes)
 
@@ -45,18 +53,23 @@ catena counterparties create wallet --name 'BlockRun testnet' \
 ## Run
 
 ```sh
-pnpm run:metered -- --calls 3
+pnpm run:metered -- --calls 2 --prompt "a robot paying a toll booth"
 ```
 
-Normal run: each call settles ~$0.001 of testnet USDC and prints the running
-total. Raise `--calls` (or lower `SPEND_CAP_USD`) to watch the cap bind: the
-first call that would exceed it is refused before payment, and the runner
-exits cleanly stating what was spent and why it stopped.
+Default run: each call pays ~$0.021 of testnet USDC for one gpt-image-1
+generation and prints the delivered image URL, the settlement status and the
+running total. Lower `SPEND_CAP_USD` (or raise `--calls`) to watch the cap
+bind: the first call that would exceed it is refused before payment. For the
+chat flow set `ENDPOINT_KIND=chat`,
+`ENDPOINT_URL=https://testnet.blockrun.ai/api/v1/chat/completions` and
+`MODEL=openai/gpt-oss-20b`.
 
-**Approval-threshold demo:** set your policy's automatic-approval threshold
-below the price of a call, run once, and the CLI parks the payment as a
-pending intent instead of paying. Approve it in the Catena console, re-run
-the same command, and the retry consumes the approval.
+**Approval-threshold demo:** in the Catena console open Governance >
+Policies > your policy > "Send money" > Rules > "+ Add rule" and set an
+approval threshold below the price of a call (e.g. $0.015 with the $0.021
+image price). Run once: the CLI parks the payment as a pending intent
+instead of paying, and it appears under Governance > Approvals. Approve it,
+re-run the same command, and the retry consumes the approval.
 
 ## Tests
 

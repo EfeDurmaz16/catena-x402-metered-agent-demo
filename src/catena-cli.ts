@@ -122,17 +122,27 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
   }
 }
 
+export interface IntentView {
+  /** Settlement truth: the inner transaction's status (pending until the
+   * seller settles on-chain, failed when it never does), falling back to
+   * the intent's own status. */
+  settlementStatus: string | undefined
+  /** The PAYMENT-SIGNATURE header value of this payment, re-readable while
+   * the authorization is still valid. Async endpoints (202 + poll_url)
+   * require it on every poll. */
+  paymentSignature: string | undefined
+}
+
 /**
  * Reconcile a payment with the platform's record: the x402 exchange saying
  * "paid" is not the same as the funds settling (a seller can fail after the
  * authorization, in which case Catena marks the intent failed and releases
- * the reserved funds). Returns the intent's current status, or undefined
- * when it cannot be read; never throws.
+ * the reserved funds). Never throws; unreadable fields come back undefined.
  */
-export async function getIntentStatus(
+export async function readIntent(
   bin: string,
   intentId: string,
-): Promise<string | undefined> {
+): Promise<IntentView> {
   try {
     const { stdout } = await execFileAsync(
       bin,
@@ -146,6 +156,7 @@ export async function getIntentStatus(
           .looseObject({
             x402: z
               .looseObject({
+                paymentSignature: z.string().optional(),
                 transaction: z
                   .looseObject({ status: z.string().optional() })
                   .optional(),
@@ -155,11 +166,11 @@ export async function getIntentStatus(
           .optional(),
       })
       .parse(JSON.parse(stdout))
-    // The intent completing only means the x402 exchange happened; whether
-    // funds actually move is the inner transaction's status (pending until
-    // the seller settles on-chain, failed when it never does).
-    return intent.data?.x402?.transaction?.status ?? intent.status
+    return {
+      settlementStatus: intent.data?.x402?.transaction?.status ?? intent.status,
+      paymentSignature: intent.data?.x402?.paymentSignature,
+    }
   } catch {
-    return undefined
+    return { settlementStatus: undefined, paymentSignature: undefined }
   }
 }

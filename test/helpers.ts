@@ -30,6 +30,8 @@ export function challengeHeader(options?: {
 export interface FakeEndpoint {
   url: string
   requests: number
+  /** PAYMENT-SIGNATURE header seen on the last GET poll, if any. */
+  polledWith: string | undefined
   close: () => Promise<void>
 }
 
@@ -41,8 +43,21 @@ export async function startFakeEndpoint(options?: {
   status?: number
   omitHeader?: boolean
 }): Promise<FakeEndpoint> {
-  const state = { requests: 0 }
-  const server: Server = createServer((_req, res) => {
+  const state = { requests: 0, polledWith: undefined as string | undefined }
+  const server: Server = createServer((req, res) => {
+    if (req.method === "GET") {
+      // Async-job poll endpoint: requires the payment's own signature.
+      state.polledWith = req.headers["payment-signature"] as string | undefined
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          status: "completed",
+          data: [{ url: "https://img.example/robot.png" }],
+          payment: { status: "settled" },
+        }),
+      )
+      return
+    }
     state.requests += 1
     const headers: Record<string, string> = {
       "content-type": "application/json",
@@ -64,6 +79,9 @@ export async function startFakeEndpoint(options?: {
     url: `http://localhost:${address.port}/chat`,
     get requests() {
       return state.requests
+    },
+    get polledWith() {
+      return state.polledWith
     },
     close: () =>
       new Promise((resolve) => {

@@ -15,6 +15,8 @@ function testConfig(endpointUrl: string, env: NodeJS.ProcessEnv = {}) {
   return loadConfig({
     CATENA_ACCOUNT_ID: "acct_test",
     ENDPOINT_URL: endpointUrl,
+    ENDPOINT_KIND: "chat",
+    PER_CALL_MAX_USD: "$0.002",
     CATENA_BIN: process.execPath, // node; fake script passed via args below
     ...env,
   })
@@ -118,6 +120,37 @@ describe("runMeteredCall", () => {
       expect(result.status).toBe("failed")
       expect(meter.totalMicros).toBe(0n)
     } finally {
+      await endpoint.close()
+    }
+  })
+})
+
+describe("async image jobs", () => {
+  it("polls a queued job with the payment's signature until delivery", async () => {
+    const endpoint = await startFakeEndpoint({ amount: "21000" })
+    process.env.FAKE_RESULT = "paid-queued"
+    try {
+      const config = testConfig(endpoint.url, {
+        CATENA_BIN: FAKE_BIN,
+        ENDPOINT_KIND: "image",
+        PER_CALL_MAX_USD: "$0.025",
+      })
+      const meter = new SpendMeter(moneyToMicros("$0.05"))
+      const result = await runMeteredCall({
+        config,
+        meter,
+        prompt: "a robot",
+        pollIntervalMs: 10,
+        pollMaxMs: 2000,
+      })
+      expect(result.status).toBe("paid")
+      if (result.status === "paid") {
+        expect(JSON.stringify(result.body)).toContain("img.example/robot.png")
+      }
+      expect(endpoint.polledWith).toBe("sig-test") // signature on the poll
+      expect(meter.totalMicros).toBe(21000n)
+    } finally {
+      delete process.env.FAKE_RESULT
       await endpoint.close()
     }
   })

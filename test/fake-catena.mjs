@@ -27,6 +27,18 @@ const results = {
       createCommand: "catena counterparties create wallet --name '<name>' ...",
     },
   },
+  "paid-queued": {
+    paid: true,
+    payment: {
+      intentId: "int_test",
+      amountAtomicUsdc: "21000",
+      payTo: "0xpayto",
+    },
+    body: JSON.stringify({
+      status: "queued",
+      poll_url: "/poll/job1",
+    }),
+  },
   garbage: "not json at all",
 }
 
@@ -43,6 +55,7 @@ if (process.argv[2] === "intents") {
       status: "completed",
       data: {
         x402: {
+          paymentSignature: "sig-test",
           transaction: {
             status: process.env.FAKE_INTENT_STATUS ?? "completed",
           },
