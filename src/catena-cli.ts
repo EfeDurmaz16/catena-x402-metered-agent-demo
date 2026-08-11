@@ -148,9 +148,11 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
     const amountMicros =
       amount && /^\d+$/.test(amount) ? BigInt(amount) : undefined
     const intentId = result.payment?.intentId
-    // CLI: paid:true + retryFailed:true means settlement authorized but the
-    // paid HTTP retry threw before a body came back.
-    if (result.retryFailed) {
+    // A paid result that still needs follow-up: 0.3.0 marked it with
+    // retryFailed:true (settlement authorized, paid HTTP retry threw); 0.4.0
+    // generalizes the contract to "any result carrying .error". Either
+    // marker means the charge is real but no usable body came back.
+    if (result.retryFailed || result.error != null) {
       return {
         status: "paid_but_error",
         amountMicros,

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -36,7 +36,8 @@ describe("payX402 result mapping", () => {
       | "counterparty"
       | "garbage"
       | "hard-fail"
-      | "retry-failed",
+      | "retry-failed"
+      | "paid-only-error",
     exit: "0" | "1" = "0",
   ) {
     vi.stubEnv("FAKE_RESULT", fakeResult)
@@ -85,6 +86,14 @@ describe("payX402 result mapping", () => {
     if (outcome.status === "paid_but_error") {
       expect(outcome.amountMicros).toBe(1000n)
       expect(outcome.intentId).toBe("int_test")
+    }
+  })
+
+  it("maps a paid result carrying only .error (0.4.0 shape) to paid_but_error", async () => {
+    const outcome = await run("paid-only-error", "1")
+    expect(outcome.status).toBe("paid_but_error")
+    if (outcome.status === "paid_but_error") {
+      expect(outcome.amountMicros).toBe(1000n)
     }
   })
 })

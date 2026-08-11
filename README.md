@@ -43,7 +43,8 @@ Catena environments serve `base-sepolia`; production serves `base`, and this
 demo pays a Base Sepolia challenge, so a production account cannot pay it
 (the CLI answers `networkMismatch` and charges nothing).
 
-Verified against @catena/cli 0.3.0 (the version the test fixtures record).
+Verified against @catena/cli 0.4.0 (fixtures recorded from 0.3.0 and
+re-verified against 0.4.0; the changes are additive).
 
 ```sh
 npm i -g @catena/cli    # v0.3.0 or newer: --header support
@@ -121,8 +122,8 @@ re-run the same command, and the retry consumes the approval.
 ## Tests
 
 `pnpm test`: unit and integration tests run against a local fake 402 endpoint
-and a stub CLI binary (fixtures recorded from @catena/cli 0.3.0). They never
-touch the network or move money.
+and a stub CLI binary (fixtures recorded from @catena/cli 0.3.0, re-verified
+against 0.4.0). They never touch the network or move money.
 
 `pnpm check` runs the whole CI gate:
 
