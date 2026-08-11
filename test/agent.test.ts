@@ -546,17 +546,36 @@ describe("money-safety regressions", () => {
 describe("runner setup checks", () => {
   it("exits 2 without CATENA_ACCOUNT_ID, before any CLI call", async () => {
     const script = fileURLToPath(new URL("../scripts/run.ts", import.meta.url))
+    // The runner loads .env from its working directory, so this spawn must
+    // be hermetic: with the repo as cwd, a developer's real .env would hand
+    // the runner a real account id and the test would move real money
+    // before failing. An empty temp cwd plus a bare environment leaves the
+    // account check as the only gate; CATENA_BIN points at the fake so a
+    // regression that reaches the CLI trips the args-file proof below
+    // instead of a live payment.
+    const dir = mkdtempSync(join(tmpdir(), "metered-hermetic-"))
+    const argsFile = join(dir, "args.jsonl")
+    // The child still needs the repo's node_modules to resolve tsx; a
+    // symlink brings that in without bringing the repo's cwd (and .env) in.
+    symlinkSync(
+      fileURLToPath(new URL("../node_modules", import.meta.url)),
+      join(dir, "node_modules"),
+    )
     const exitCode = await new Promise<number | null>((resolve, reject) => {
       const child = spawn(process.execPath, ["--import", "tsx", script], {
-        // A bare environment: no account id, so the runner must stop at the
-        // setup check rather than reaching the payment path.
-        env: { PATH: process.env.PATH ?? "" },
+        cwd: dir,
+        env: {
+          PATH: process.env.PATH ?? "",
+          CATENA_BIN: FAKE_BIN,
+          FAKE_ARGS_FILE: argsFile,
+        },
         stdio: "ignore",
       })
       child.on("error", reject)
       child.on("exit", resolve)
     })
     expect(exitCode).toBe(2)
+    expect(existsSync(argsFile)).toBe(false) // the CLI was never invoked
   })
 })
 
