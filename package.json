@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Metered agent paying a real x402 endpoint per call from a Catena account, with a configured spend cap",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EfeDurmaz16/catena-x402-metered-agent-demo.git"
+  },
   "type": "module",
   "private": true,
   "packageManager": "pnpm@11.9.0",
@@ -10,18 +14,20 @@
     "node": ">=22.13"
   },
   "scripts": {
+    "demo": "tsx scripts/run.ts",
     "run:metered": "tsx scripts/run.ts",
     "test": "vitest run",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test"
   },
   "dependencies": {
     "zod": "^4.0.5"
   },
   "devDependencies": {
-    "@eslint/js": "^10.0.1",
+    "@eslint/js": "^9.39.0",
     "@types/node": "^22.15.0",
     "eslint": "^9.30.0",
     "prettier": "^3.9.5",

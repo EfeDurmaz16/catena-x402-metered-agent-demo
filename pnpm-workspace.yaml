@@ -1,2 +1,4 @@
+# pnpm 11 blocks postinstall scripts unless a package is listed here. esbuild
+# (a vitest dependency) needs its install script to fetch its native binary.
 allowBuilds:
   esbuild: true
