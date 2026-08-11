@@ -30,12 +30,7 @@ export interface Quote {
 
 export class ChallengeError extends Error {}
 
-/**
- * POST the request body unpaid and return the price quoted for our network.
- * Fails closed: anything other than a 402 carrying an exact-scheme challenge
- * for the expected network is an error, never a silent zero.
- */
-export async function probeQuote(options: {
+export interface ProbeQuoteOptions {
   url: string
   body: unknown
   network: string
@@ -44,7 +39,14 @@ export async function probeQuote(options: {
   /** Deadline for the quote request; defaults to 30s. */
   timeoutMs?: number
   fetchImpl?: typeof fetch
-}): Promise<Quote> {
+}
+
+/**
+ * POST the request body unpaid and return the price quoted for our network.
+ * Fails closed: anything other than a 402 carrying an exact-scheme challenge
+ * for the expected network is an error, never a silent zero.
+ */
+export async function probeQuote(options: ProbeQuoteOptions): Promise<Quote> {
   const { url, body, network, asset, fetchImpl = fetch } = options
   let response: Response
   try {
@@ -70,7 +72,7 @@ export async function probeQuote(options: {
   if (!header) {
     throw new ChallengeError("402 response carries no PAYMENT-REQUIRED header")
   }
-  let challenge
+  let challenge: z.infer<typeof challengeSchema>
   try {
     challenge = challengeSchema.parse(
       JSON.parse(Buffer.from(header, "base64").toString("utf8")),

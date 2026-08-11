@@ -1,64 +1,99 @@
+import { z } from "zod"
 import { payX402, readIntent } from "./catena-cli.js"
 import { probeQuote } from "./challenge.js"
-import { microsToMoney, moneyToMicros } from "./config.js"
+import type { Quote } from "./challenge.js"
+import { microsToMoney } from "./config.js"
 import type { Config } from "./config.js"
 import type { SpendMeter } from "./meter.js"
 
+/** What a charged call reports, whatever the endpoint did with the money. */
+interface Charged {
+  amountMicros: bigint
+  settlementStatus: string | undefined
+  body: unknown
+}
+
 export type MeteredCallResult =
-  | {
-      status: "paid"
-      amountMicros: bigint
-      settlementStatus: string | undefined
-      body: unknown
-    }
+  | ({ status: "paid" } & Charged)
   /** The x402 exchange reported paid but the endpoint returned an error
    * body. Whether funds actually moved is what settlementStatus says: a
    * failed intent means Catena released the reserved funds. Surfaced
    * distinctly so a run never reads a charged failure as success. */
-  | {
-      status: "paid_but_error"
-      amountMicros: bigint
-      settlementStatus: string | undefined
-      body: unknown
-    }
+  | ({ status: "paid_but_error" } & Charged)
   | { status: "cap_reached"; priceMicros: bigint }
   | {
       status: "approval_pending"
       intentId: string | undefined
       reason: string | undefined
     }
-  | { status: "setup_required"; createCommand: string | undefined }
+  | {
+      status: "setup_required"
+      createCommand: string | undefined
+      serviceName: string | undefined
+      nameIsPlaceholder: boolean | undefined
+    }
   | { status: "failed"; reason: string }
+
+/**
+ * The one shape every endpoint body is read through. Async job bodies arrive
+ * from the CLI as a JSON string and from a poll already parsed, so the string
+ * case is decoded first. Field-level `.catch` keeps an odd value in one field
+ * from failing the whole parse: a body carrying `error` must still read as an
+ * error when its `data` is malformed.
+ */
+const bodySchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value
+    try {
+      const decoded: unknown = JSON.parse(value)
+      return decoded
+    } catch {
+      return value
+    }
+  },
+  z.looseObject({
+    status: z.string().optional().catch(undefined),
+    poll_url: z.string().optional().catch(undefined),
+    error: z.unknown().optional(),
+    choices: z.unknown().optional(),
+    data: z
+      .array(z.looseObject({ url: z.string().optional() }))
+      .optional()
+      .catch(undefined),
+  }),
+)
+
+/** Read an endpoint body; undefined when it is not a JSON object at all. */
+export function parseBody(
+  body: unknown,
+): z.infer<typeof bodySchema> | undefined {
+  const parsed = bodySchema.safeParse(body)
+  return parsed.success ? parsed.data : undefined
+}
 
 /** BlockRun-style error bodies: `{"error": ...}` with no choices, or a
  * terminal job status that is not a successful delivery. */
 function isErrorBody(body: unknown): boolean {
-  if (typeof body === "string") {
-    try {
-      return isErrorBody(JSON.parse(body))
-    } catch {
-      return false
-    }
-  }
-  if (typeof body !== "object" || body === null) return false
-  if ("error" in body && !("choices" in body)) return true
-  const status = (body as { status?: unknown }).status
+  const parsed = parseBody(body)
+  if (!parsed) return false
+  if (parsed.error !== undefined && parsed.choices === undefined) return true
+  const { status } = parsed
   return status === "failed" || status === "cancelled" || status === "canceled"
 }
 
 /** True when a body still describes an unresolved async job. */
 function isUnresolvedJob(body: unknown): boolean {
-  let parsed = body
-  if (typeof parsed === "string") {
-    try {
-      parsed = JSON.parse(parsed)
-    } catch {
-      return false
-    }
-  }
-  if (typeof parsed !== "object" || parsed === null) return false
-  if (!("status" in parsed)) return false
-  return parsed.status === "queued" || parsed.status === "in_progress"
+  const status = parseBody(body)?.status
+  return status === "queued" || status === "in_progress"
+}
+
+export interface RunMeteredCallOptions {
+  config: Config
+  meter: SpendMeter
+  prompt: string
+  fetchImpl?: typeof fetch
+  pollIntervalMs?: number
+  pollMaxMs?: number
 }
 
 /**
@@ -67,14 +102,9 @@ function isUnresolvedJob(body: unknown): boolean {
  * The cap check binds BEFORE money moves; --maxAmount caps the single call
  * as defense in depth even if the quote were stale.
  */
-export async function runMeteredCall(options: {
-  config: Config
-  meter: SpendMeter
-  prompt: string
-  fetchImpl?: typeof fetch
-  pollIntervalMs?: number
-  pollMaxMs?: number
-}): Promise<MeteredCallResult> {
+export async function runMeteredCall(
+  options: RunMeteredCallOptions,
+): Promise<MeteredCallResult> {
   const { config, meter, prompt, fetchImpl } = options
   if (!config.CATENA_ACCOUNT_ID) {
     return {
@@ -91,7 +121,7 @@ export async function runMeteredCall(options: {
           max_tokens: 128,
         }
 
-  let quote
+  let quote: Quote
   try {
     quote = await probeQuote({
       url: config.ENDPOINT_URL,
@@ -112,15 +142,30 @@ export async function runMeteredCall(options: {
   // quote cannot push the total past the cap. Reserving that ceiling (not
   // the quote) in the same tick as the check means a concurrent call sees
   // the worst case this one could spend, and no await sits between the two.
-  const perCallMicros = moneyToMicros(config.PER_CALL_MAX_USD)
-  const remainingMicros = meter.capMicros - meter.totalMicros
+  const perCallMicros = config.PER_CALL_MAX_USD
+  // Clamped at zero: a meter that settled above what it authorized must read
+  // as "nothing left", never as a negative budget to authorize against.
+  const remaining = meter.capMicros - meter.totalMicros
+  const remainingMicros = remaining > 0n ? remaining : 0n
   const authorizedMicros =
     perCallMicros < remainingMicros ? perCallMicros : remainingMicros
   if (
-    meter.capMicros - meter.totalMicros < quote.amountMicros ||
+    remainingMicros <= 0n ||
+    remainingMicros < quote.amountMicros ||
     !meter.reserve(authorizedMicros)
   ) {
     return { status: "cap_reached", priceMicros: quote.amountMicros }
+  }
+  // The cap has room but the per-call ceiling does not: the CLI would refuse
+  // this challenge at --maxAmount and report a generic failure, so name the
+  // knob here instead. Checked after the cap so a genuine cap stop still
+  // reports as one.
+  if (quote.amountMicros > authorizedMicros) {
+    meter.release(authorizedMicros)
+    return {
+      status: "failed",
+      reason: `quoted price ${microsToMoney(quote.amountMicros)} exceeds PER_CALL_MAX_USD ${microsToMoney(perCallMicros)}; raise PER_CALL_MAX_USD`,
+    }
   }
 
   const outcome = await payX402({
@@ -187,6 +232,18 @@ export async function runMeteredCall(options: {
     }
   }
 
+  // An image body that never decoded as JSON cannot be searched for the
+  // delivered asset or for an error key, so it must not read as a delivery.
+  if (
+    config.ENDPOINT_KIND === "image" &&
+    typeof body === "string" &&
+    parseBody(body) === undefined
+  ) {
+    body = {
+      error: "paid job body was not readable JSON; delivery unconfirmed",
+    }
+  }
+
   // A queued/in_progress body that was never resolved (missing intent id or
   // signature, a body claiming queued without a usable poll_url, a
   // cross-origin poll_url, or a poll that timed out) must not read as a
@@ -200,6 +257,8 @@ export async function runMeteredCall(options: {
 
   // Reconcile with the platform: "paid" in the x402 exchange is an
   // authorization; the intent's status says whether funds actually settled.
+  // Read AFTER the poll: the seller settles on the completing poll, so a
+  // pre-poll read always reports pre-settlement status.
   const settlementStatus = outcome.intentId
     ? (await readIntent(config.CATENA_BIN, outcome.intentId)).settlementStatus
     : undefined
@@ -231,34 +290,24 @@ function resolveSameOriginPollUrl(
 
 /** A 202-style queued/in-progress job body carrying a poll_url. */
 function asQueuedJob(body: unknown): { pollUrl: string } | undefined {
-  let parsed = body
-  if (typeof parsed === "string") {
-    try {
-      parsed = JSON.parse(parsed)
-    } catch {
-      return undefined
-    }
-  }
-  if (typeof parsed !== "object" || parsed === null) return undefined
-  if (!("status" in parsed) || !("poll_url" in parsed)) return undefined
-  if (parsed.status !== "queued" && parsed.status !== "in_progress") {
-    return undefined
-  }
-  return typeof parsed.poll_url === "string"
-    ? { pollUrl: parsed.poll_url }
+  const pollUrl = parseBody(body)?.poll_url
+  return isUnresolvedJob(body) && pollUrl !== undefined
+    ? { pollUrl }
     : undefined
 }
 
-/** Poll an async job until it leaves queued/in_progress or time runs out.
- * Sends the payment's own signature on every poll; the seller re-verifies
- * it and settles on the completing poll. */
-async function pollJob(options: {
+interface PollJobOptions {
   pollUrl: string
   paymentSignature: string
   fetchImpl: typeof fetch
   intervalMs: number
   maxMs: number
-}): Promise<unknown> {
+}
+
+/** Poll an async job until it leaves queued/in_progress or time runs out.
+ * Sends the payment's own signature on every poll; the seller re-verifies
+ * it and settles on the completing poll. */
+async function pollJob(options: PollJobOptions): Promise<unknown> {
   const { pollUrl, paymentSignature, fetchImpl, intervalMs, maxMs } = options
   const startedAt = Date.now()
   let last: unknown = { error: "poll timed out before a terminal status" }
@@ -303,8 +352,7 @@ async function pollJob(options: {
     last = response.ok
       ? parsed
       : { error: `poll failed: HTTP ${response.status}`, body: parsed }
-    const status = (parsed as { status?: unknown }).status
-    if (status !== "queued" && status !== "in_progress") return last
+    if (!isUnresolvedJob(parsed)) return last
   }
   // Still transitional at timeout: return an error body, never the last
   // in_progress object (which lacks poll_url and would look like success).

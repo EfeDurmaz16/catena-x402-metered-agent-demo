@@ -37,6 +37,12 @@ export class SpendMeter {
    * not pay. No await may separate this from the decision it guards.
    */
   reserve(priceMicros: bigint): boolean {
+    // Zero would report a hold that claims nothing; negative would hand back
+    // budget that was never spent. Neither is reachable from the runner, and
+    // refusing them here keeps it that way if a future caller changes.
+    if (priceMicros <= 0n) {
+      throw new Error("Reservation must be greater than 0")
+    }
     if (this.total + priceMicros > this.capMicros) return false
     this.total += priceMicros
     return true

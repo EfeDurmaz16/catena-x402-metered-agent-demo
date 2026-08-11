@@ -8,8 +8,7 @@ const execFileAsync = promisify(execFile)
  * Payment surface: the released Catena CLI (`catena x402 --json`), consumed
  * as a customer would. Payments draw from a Catena-governed account, so the
  * platform's own policy engine (counterparty allowlist, spend limits,
- * approval thresholds) rules every spend; this repo never reimplements any
- * of that.
+ * approval thresholds) rules every spend.
  */
 
 /** Shapes documented by `catena guide`; unknown fields pass through. */
@@ -35,6 +34,11 @@ const resultSchema = z.looseObject({
     .looseObject({
       payTo: z.string().optional(),
       createCommand: z.string().optional(),
+      /** Name the endpoint advertised for itself. Unverified. */
+      serviceName: z.string().optional(),
+      /** True when the endpoint advertised no usable name, so the --name in
+       * createCommand is a literal placeholder to replace. */
+      nameIsPlaceholder: z.boolean().optional(),
     })
     .optional()
     .nullable(),
@@ -43,26 +47,36 @@ const resultSchema = z.looseObject({
   error: z.unknown().optional(),
 })
 
+/** What the CLI reports about a charge, whatever the endpoint answered. */
+interface Charged {
+  amountMicros: bigint | undefined
+  intentId: string | undefined
+  body: unknown
+}
+
 export type PayOutcome =
-  | {
-      status: "paid"
-      amountMicros: bigint | undefined
-      intentId: string | undefined
-      body: unknown
-    }
-  | {
-      status: "paid_but_error"
-      amountMicros: bigint | undefined
-      intentId: string | undefined
-      body: unknown
-    }
+  | ({ status: "paid" } & Charged)
+  | ({ status: "paid_but_error" } & Charged)
   | {
       status: "approval_pending"
       intentId: string | undefined
       reason: string | undefined
     }
-  | { status: "setup_required"; createCommand: string | undefined }
+  | {
+      status: "setup_required"
+      createCommand: string | undefined
+      serviceName: string | undefined
+      nameIsPlaceholder: boolean | undefined
+    }
   | { status: "failed"; reason: string }
+
+/** What a rejected execFile carries; anything unreadable stays undefined. */
+const execFailureSchema = z.looseObject({
+  stdout: z.string().optional().catch(undefined),
+  stderr: z.string().optional().catch(undefined),
+  killed: z.boolean().optional().catch(undefined),
+  signal: z.string().optional().catch(undefined),
+})
 
 export interface PayOptions {
   bin: string
@@ -96,13 +110,10 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
     }))
   } catch (error) {
     // Non-zero exit still prints the JSON result (e.g. approvalPending);
-    // fall through to parsing when stdout is present.
-    const failed = error as {
-      stdout?: string
-      stderr?: string
-      killed?: boolean
-      signal?: string
-    }
+    // fall through to parsing when stdout is present. Parsed rather than
+    // asserted so an odd rejection value cannot smuggle a truthy `killed`
+    // through, and a bad field never hides a real one.
+    const failed = execFailureSchema.catch({}).parse(error)
     const killed = failed.killed === true || typeof failed.signal === "string"
     if (killed) {
       // Whether or not partial output arrived, a killed CLI may have already
@@ -120,7 +131,7 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
     }
     stdout = failed.stdout
   }
-  let result
+  let result: z.infer<typeof resultSchema>
   try {
     result = resultSchema.parse(JSON.parse(stdout))
   } catch {
@@ -129,25 +140,9 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
       reason: `Unrecognized CLI output: ${stdout.slice(0, 200)}`,
     }
   }
-  if (result.approvalPending) {
-    return {
-      status: "approval_pending",
-      intentId: result.approvalPending.intentId,
-      reason: result.approvalPending.reasons?.[0],
-    }
-  }
-  if (result.counterpartyNotFound) {
-    return {
-      status: "setup_required",
-      createCommand: result.counterpartyNotFound.createCommand,
-    }
-  }
-  if (result.networkMismatch) {
-    return {
-      status: "failed",
-      reason: `network mismatch: the account cannot pay this challenge's network (${JSON.stringify(result.networkMismatch).slice(0, 200)}); re-run with --account set to a wallet on that network`,
-    }
-  }
+  // Checked first: a result that says paid was charged, whatever else it
+  // carries. Over-recording a charge is the safe direction; reading a charge
+  // as a parked approval would let the next call spend the same budget.
   if (result.paid) {
     const amount = result.payment?.amountAtomicUsdc
     const amountMicros =
@@ -170,6 +165,27 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
       body: result.body,
     }
   }
+  if (result.approvalPending) {
+    return {
+      status: "approval_pending",
+      intentId: result.approvalPending.intentId,
+      reason: result.approvalPending.reasons?.join("; "),
+    }
+  }
+  if (result.counterpartyNotFound) {
+    return {
+      status: "setup_required",
+      createCommand: result.counterpartyNotFound.createCommand,
+      serviceName: result.counterpartyNotFound.serviceName,
+      nameIsPlaceholder: result.counterpartyNotFound.nameIsPlaceholder,
+    }
+  }
+  if (result.networkMismatch) {
+    return {
+      status: "failed",
+      reason: `network mismatch: the account cannot pay this challenge's network (${JSON.stringify(result.networkMismatch).slice(0, 200)}); re-run with --account set to a wallet on that network`,
+    }
+  }
   return {
     status: "failed",
     reason: `CLI reported no payment: ${JSON.stringify(result.error ?? result).slice(0, 200)}`,
@@ -179,7 +195,9 @@ export async function payX402(options: PayOptions): Promise<PayOutcome> {
 export interface IntentView {
   /** Settlement truth: the inner transaction's status (pending until the
    * seller settles on-chain, failed when it never does), falling back to
-   * the intent's own status. */
+   * the intent's own status. The transaction status is a raw backend string
+   * while the intent's is the CLI's simplified one, so this is reported and
+   * tallied for a human, never branched on. */
   settlementStatus: string | undefined
   /** The PAYMENT-SIGNATURE header value of this payment, re-readable while
    * the authorization is still valid. Async endpoints (202 + poll_url)
