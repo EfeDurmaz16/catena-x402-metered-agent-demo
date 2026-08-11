@@ -72,4 +72,38 @@ describe("SpendMeter", () => {
     expect(meter.totalMicros).toBe(1200n)
     expect(meter.entries[0]?.amountMicros).toBe(1200n)
   })
+
+  it("refuses to give back what was never reserved", () => {
+    // release and settle move money out of the reserved pool, so they get
+    // the same validation reserve has: a negative or unreserved amount must
+    // throw instead of silently corrupting the running total.
+    const meter = new SpendMeter(5000n)
+    expect(() => {
+      meter.release(1000n)
+    }).toThrow(/currently reserved/)
+    expect(() => {
+      meter.settle("x", 1000n, 1000n)
+    }).toThrow(/currently reserved/)
+    meter.reserve(1000n)
+    expect(() => {
+      meter.release(-1n)
+    }).toThrow(/greater than 0/)
+    expect(() => {
+      meter.release(0n)
+    }).toThrow(/greater than 0/)
+    expect(() => {
+      meter.release(2000n)
+    }).toThrow(/currently reserved/)
+    expect(() => {
+      meter.settle("x", 1000n, -1n)
+    }).toThrow(/cannot be negative/)
+    // Nothing above changed the accounting.
+    expect(meter.totalMicros).toBe(1000n)
+    meter.release(1000n)
+    expect(meter.totalMicros).toBe(0n)
+    // The released reservation is spent; releasing it twice must throw.
+    expect(() => {
+      meter.release(1000n)
+    }).toThrow(/currently reserved/)
+  })
 })
