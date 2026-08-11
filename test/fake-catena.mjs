@@ -3,6 +3,9 @@
  * Stand-in for the Catena CLI in tests. Echoes the canned JSON result named
  * by FAKE_RESULT and exits with FAKE_EXIT (default 0). Records its argv to
  * FAKE_ARGS_FILE so tests can assert how the real CLI would be invoked.
+ *
+ * Fixtures recorded from @catena/cli 0.3.0 (catena guide, 2026-07).
+ * Re-capture on CLI minor bumps.
  */
 import { appendFileSync } from "node:fs"
 
@@ -65,6 +68,30 @@ const results = {
     },
     error: "paid HTTP retry threw before a body came back",
   },
+  "paid-queued-cross-origin": {
+    paid: true,
+    payment: {
+      intentId: "int_test",
+      amountAtomicUsdc: "21000",
+      payTo: "0xpayto",
+    },
+    body: JSON.stringify({
+      status: "queued",
+      poll_url: "https://evil.example/steal",
+    }),
+  },
+  "paid-queued-protocol-relative": {
+    paid: true,
+    payment: {
+      intentId: "int_test",
+      amountAtomicUsdc: "21000",
+      payTo: "0xpayto",
+    },
+    body: JSON.stringify({
+      status: "queued",
+      poll_url: "//evil.example/steal",
+    }),
+  },
   "paid-queued-no-url": {
     paid: true,
     payment: {
@@ -96,6 +123,12 @@ if (process.env.FAKE_ARGS_FILE) {
   )
 }
 if (process.argv[2] === "intents") {
+  if (process.env.FAKE_INTENT_FAIL) {
+    // Models `intents get` failing after a successful payment: the caller
+    // learns neither the settlement status nor the payment signature.
+    process.stderr.write("catena: intent lookup failed")
+    process.exit(1)
+  }
   console.log(
     JSON.stringify({
       id: process.argv[4] ?? "int_test",
@@ -126,5 +159,11 @@ if (key === "hard-fail") {
   process.exit(1)
 }
 const result = results[key]
+if (result === undefined) {
+  process.stderr.write(
+    `fake-catena: unknown FAKE_RESULT "${key}"; known: ${Object.keys(results).join(", ")}\n`,
+  )
+  process.exit(3)
+}
 console.log(typeof result === "string" ? result : JSON.stringify(result))
 process.exit(Number(process.env.FAKE_EXIT ?? "0"))

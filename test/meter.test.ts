@@ -10,6 +10,7 @@ describe("money", () => {
     expect(microsToMoney(0n)).toBe("$0")
     expect(microsToMoney(1_000_000n)).toBe("$1")
     expect(microsToMoney(12_340_000n)).toBe("$12.34")
+    expect(microsToMoney(-1000n)).toBe("-$0.001") // sign, not "-1" digits
   })
 
   it("rejects malformed and over-precise values", () => {
@@ -19,14 +20,12 @@ describe("money", () => {
 })
 
 describe("config", () => {
-  it("defaults to the Base Sepolia BlockRun endpoint and a small cap", () => {
+  it("never defaults to mainnet and rejects a zero spend cap", () => {
     const config = loadConfig({})
-    expect(config.ENDPOINT_URL).toContain("testnet.blockrun.ai")
     expect(config.X402_NETWORK).toBe("eip155:84532")
-    expect(moneyToMicros(config.SPEND_CAP_USD)).toBeGreaterThan(0n)
-  })
-
-  it("rejects a zero spend cap", () => {
+    // Money env values are bigint micro-dollars once parsed, defaults too.
+    expect(config.SPEND_CAP_USD).toBe(50_000n)
+    expect(config.PER_CALL_MAX_USD).toBe(25_000n)
     expect(() => loadConfig({ SPEND_CAP_USD: "$0" })).toThrow()
   })
 })
@@ -43,12 +42,17 @@ describe("SpendMeter", () => {
     expect(meter.reserve(1n)).toBe(false)
     expect(meter.totalMicros).toBe(3000n)
     expect(meter.entries).toHaveLength(3)
+    // A first call already over the cap claims nothing.
+    const small = new SpendMeter(500n)
+    expect(small.reserve(1000n)).toBe(false)
+    expect(small.totalMicros).toBe(0n)
   })
 
-  it("refuses a first call that is already over the cap", () => {
-    const meter = new SpendMeter(500n)
-    expect(meter.reserve(1000n)).toBe(false)
-    expect(meter.totalMicros).toBe(0n) // a refused reservation claims nothing
+  it("refuses to exist without a budget, or to reserve nothing", () => {
+    expect(() => new SpendMeter(0n)).toThrow()
+    expect(() => new SpendMeter(-1n)).toThrow()
+    expect(() => new SpendMeter(1000n).reserve(0n)).toThrow()
+    expect(() => new SpendMeter(1000n).reserve(-1n)).toThrow()
   })
 
   it("counts a reservation while the payment is in flight", () => {

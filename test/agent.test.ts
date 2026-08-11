@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -6,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { runMeteredCall } from "../src/agent.js"
 import { payX402 } from "../src/catena-cli.js"
 import { loadConfig, moneyToMicros } from "../src/config.js"
+import type { Config } from "../src/config.js"
 import { SpendMeter } from "../src/meter.js"
 import { startFakeEndpoint } from "./helpers.js"
 
@@ -15,7 +17,7 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
-function testConfig(endpointUrl: string, env: NodeJS.ProcessEnv = {}) {
+function testConfig(endpointUrl: string, env: NodeJS.ProcessEnv = {}): Config {
   return loadConfig({
     CATENA_ACCOUNT_ID: "acct_test",
     ENDPOINT_URL: endpointUrl,
@@ -119,18 +121,30 @@ describe("runMeteredCall", () => {
     }
   })
 
-  it("refuses the call BEFORE paying when the cap would be exceeded", async () => {
-    const endpoint = await startFakeEndpoint({ amount: "4000" })
+  // Both refusals must happen before the CLI is ever spawned: the absent
+  // args file is the proof that no payment could have been attempted.
+  it.each([
+    {
+      why: "the cap would be exceeded",
+      endpointOptions: { amount: "4000" },
+      capUsd: "$0.003",
+      expected: { status: "cap_reached", priceMicros: 4000n },
+    },
+    {
+      why: "the endpoint offers the wrong network",
+      endpointOptions: { network: "eip155:8453" },
+      capUsd: "$0.005",
+      expected: { status: "failed" },
+    },
+  ])("refuses the call BEFORE paying when $why", async (testCase) => {
+    const endpoint = await startFakeEndpoint(testCase.endpointOptions)
     const argsFile = join(mkdtempSync(join(tmpdir(), "metered-")), "args.jsonl")
     vi.stubEnv("FAKE_ARGS_FILE", argsFile)
     try {
       const config = testConfig(endpoint.url)
-      const meter = new SpendMeter(moneyToMicros("$0.003"))
+      const meter = new SpendMeter(moneyToMicros(testCase.capUsd))
       const result = await runMeteredCall({ config, meter, prompt: "hi" })
-      expect(result).toMatchObject({
-        status: "cap_reached",
-        priceMicros: 4000n,
-      })
+      expect(result).toMatchObject(testCase.expected)
       expect(meter.totalMicros).toBe(0n)
       expect(existsSync(argsFile)).toBe(false) // the CLI was never invoked
     } finally {
@@ -138,17 +152,21 @@ describe("runMeteredCall", () => {
     }
   })
 
-  it("fails without paying when the endpoint offers the wrong network", async () => {
-    const endpoint = await startFakeEndpoint({ network: "eip155:8453" })
+  it("refuses a quote above the per-call ceiling with an actionable reason", async () => {
+    const endpoint = await startFakeEndpoint({ amount: "4000" })
     const argsFile = join(mkdtempSync(join(tmpdir(), "metered-")), "args.jsonl")
     vi.stubEnv("FAKE_ARGS_FILE", argsFile)
     try {
+      // The cap has room ($0.05) but PER_CALL_MAX_USD ($0.002) does not.
       const config = testConfig(endpoint.url)
-      const meter = new SpendMeter(moneyToMicros("$0.005"))
+      const meter = new SpendMeter(moneyToMicros("$0.05"))
       const result = await runMeteredCall({ config, meter, prompt: "hi" })
       expect(result.status).toBe("failed")
-      expect(meter.totalMicros).toBe(0n)
-      expect(existsSync(argsFile)).toBe(false) // the CLI was never invoked
+      if (result.status === "failed") {
+        expect(result.reason).toContain("PER_CALL_MAX_USD")
+      }
+      expect(meter.totalMicros).toBe(0n) // the reservation was handed back
+      expect(existsSync(argsFile)).toBe(false)
     } finally {
       await endpoint.close()
     }
@@ -157,7 +175,10 @@ describe("runMeteredCall", () => {
 
 describe("async image jobs", () => {
   it("polls a queued job with the payment's signature until delivery", async () => {
-    const endpoint = await startFakeEndpoint({ amount: "21000" })
+    const endpoint = await startFakeEndpoint({
+      amount: "21000",
+      queuedPolls: 2,
+    })
     vi.stubEnv("FAKE_RESULT", "paid-queued")
     try {
       const config = testConfig(endpoint.url, {
@@ -177,7 +198,99 @@ describe("async image jobs", () => {
         expect(JSON.stringify(result.body)).toContain("img.example/robot.png")
       }
       expect(endpoint.polledWith).toBe("sig-test") // signature on the poll
+      expect(endpoint.gets).toBe(3) // 2 in_progress answers, then delivery
       expect(meter.totalMicros).toBe(21000n)
+    } finally {
+      await endpoint.close()
+    }
+  })
+
+  // The payment signature is a bearer credential: a hostile body that names
+  // another host must never receive it, however the URL is written.
+  it.each([
+    ["an absolute cross-origin URL", "paid-queued-cross-origin"],
+    ["a protocol-relative URL", "paid-queued-protocol-relative"],
+  ])("refuses to poll %s", async (_case, fakeResult) => {
+    const endpoint = await startFakeEndpoint({ amount: "21000" })
+    vi.stubEnv("FAKE_RESULT", fakeResult)
+    try {
+      const config = testConfig(endpoint.url, {
+        ENDPOINT_KIND: "image",
+        PER_CALL_MAX_USD: "$0.025",
+      })
+      // Every request the run makes is recorded, and anything leaving the
+      // endpoint's origin is answered with a delivered-looking result
+      // instead of reaching the network. Drop the same-origin check in
+      // resolveSameOriginPollUrl and this test reports "paid" with
+      // evil.example in the requested list, which is the failure it exists
+      // to catch.
+      const requested: string[] = []
+      const origin = new URL(endpoint.url).origin
+      const recordingFetch: typeof fetch = async (input, init) => {
+        const url =
+          input instanceof URL
+            ? input.href
+            : typeof input === "string"
+              ? input
+              : input.url
+        requested.push(url)
+        if (new URL(url).origin !== origin) {
+          return new Response(
+            JSON.stringify({
+              status: "completed",
+              data: [{ url: "https://img.example/stolen.png" }],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          )
+        }
+        return fetch(input, init)
+      }
+      const meter = new SpendMeter(moneyToMicros("$0.05"))
+      const result = await runMeteredCall({
+        config,
+        meter,
+        prompt: "a robot",
+        fetchImpl: recordingFetch,
+        pollIntervalMs: 10,
+        pollMaxMs: 200,
+      })
+      expect(result.status).toBe("paid_but_error")
+      if (result.status === "paid_but_error") {
+        expect(JSON.stringify(result.body)).toContain("same-origin")
+      }
+      expect(requested.map((url) => new URL(url).origin)).toEqual([origin])
+      expect(endpoint.polledWith).toBeUndefined() // the signature never left
+      expect(endpoint.gets).toBe(0)
+    } finally {
+      await endpoint.close()
+    }
+  })
+
+  it("reports paid_but_error when the intent read fails after paying", async () => {
+    // No intent read means no payment signature, so the queued job can never
+    // be polled: a charge with an unconfirmed delivery, not a success.
+    const endpoint = await startFakeEndpoint({ amount: "21000" })
+    vi.stubEnv("FAKE_RESULT", "paid-queued")
+    vi.stubEnv("FAKE_INTENT_FAIL", "1")
+    try {
+      const config = testConfig(endpoint.url, {
+        ENDPOINT_KIND: "image",
+        PER_CALL_MAX_USD: "$0.025",
+      })
+      const meter = new SpendMeter(moneyToMicros("$0.05"))
+      const result = await runMeteredCall({
+        config,
+        meter,
+        prompt: "a robot",
+        pollIntervalMs: 10,
+        pollMaxMs: 200,
+      })
+      expect(result.status).toBe("paid_but_error")
+      if (result.status === "paid_but_error") {
+        expect(result.settlementStatus).toBeUndefined()
+      }
+      expect(endpoint.gets).toBe(0)
+      expect(meter.totalMicros).toBe(21000n) // the charge is still recorded
     } finally {
       await endpoint.close()
     }
@@ -234,32 +347,6 @@ describe("charged-but-not-delivered and settlement reporting", () => {
 })
 
 describe("poll resilience", () => {
-  it("keeps polling through in_progress answers until delivery", async () => {
-    const endpoint = await startFakeEndpoint({
-      amount: "21000",
-      queuedPolls: 2,
-    })
-    vi.stubEnv("FAKE_RESULT", "paid-queued")
-    try {
-      const config = testConfig(endpoint.url, {
-        ENDPOINT_KIND: "image",
-        PER_CALL_MAX_USD: "$0.025",
-      })
-      const meter = new SpendMeter(moneyToMicros("$0.05"))
-      const result = await runMeteredCall({
-        config,
-        meter,
-        prompt: "a robot",
-        pollIntervalMs: 10,
-        pollMaxMs: 2000,
-      })
-      expect(result.status).toBe("paid")
-      expect(endpoint.gets).toBe(3) // 2 in_progress + 1 completed
-    } finally {
-      await endpoint.close()
-    }
-  })
-
   it("treats a transient non-JSON poll response as retryable, not delivered", async () => {
     const endpoint = await startFakeEndpoint({
       amount: "21000",
@@ -453,6 +540,23 @@ describe("money-safety regressions", () => {
     if (outcome.status === "failed") {
       expect(outcome.reason).toContain("may already be in flight")
     }
+  })
+})
+
+describe("runner setup checks", () => {
+  it("exits 2 without CATENA_ACCOUNT_ID, before any CLI call", async () => {
+    const script = fileURLToPath(new URL("../scripts/run.ts", import.meta.url))
+    const exitCode = await new Promise<number | null>((resolve, reject) => {
+      const child = spawn(process.execPath, ["--import", "tsx", script], {
+        // A bare environment: no account id, so the runner must stop at the
+        // setup check rather than reaching the payment path.
+        env: { PATH: process.env.PATH ?? "" },
+        stdio: "ignore",
+      })
+      child.on("error", reject)
+      child.on("exit", resolve)
+    })
+    expect(exitCode).toBe(2)
   })
 })
 

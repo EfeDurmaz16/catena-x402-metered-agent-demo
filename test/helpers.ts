@@ -52,6 +52,8 @@ export async function startFakeEndpoint(options?: {
   /** Serve every poll with this HTTP status and a JSON body carrying no
    * error key (models a seller 500 that still returns JSON). */
   pollHttpError?: number
+  /** Send this verbatim as PAYMENT-REQUIRED instead of a valid challenge. */
+  rawHeader?: string
 }): Promise<FakeEndpoint> {
   const state = {
     gets: 0,
@@ -61,7 +63,9 @@ export async function startFakeEndpoint(options?: {
     if (req.method === "GET") {
       // Async-job poll endpoint: requires the payment's own signature.
       state.gets += 1
-      state.polledWith = req.headers["payment-signature"] as string | undefined
+      // node gives a repeated header as string[]; keep the first value.
+      const signature = req.headers["payment-signature"]
+      state.polledWith = Array.isArray(signature) ? signature[0] : signature
       if (state.gets <= (options?.brokenPolls ?? 0)) {
         res.writeHead(502, { "content-type": "text/html" })
         res.end("<html>bad gateway</html>")
@@ -96,7 +100,8 @@ export async function startFakeEndpoint(options?: {
       "content-type": "application/json",
     }
     if (!options?.omitHeader) {
-      headers["payment-required"] = challengeHeader(options)
+      headers["payment-required"] =
+        options?.rawHeader ?? challengeHeader(options)
     }
     res.writeHead(options?.status ?? 402, headers)
     res.end(JSON.stringify({ error: "Payment Required" }))
