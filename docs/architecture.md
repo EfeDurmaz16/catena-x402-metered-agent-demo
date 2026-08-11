@@ -1,17 +1,8 @@
 # Architecture
 
-```mermaid
-flowchart LR
-  A["Metered agent<br/>quote, cap, reconcile"] -->|402 then pay| E["BlockRun<br/>image API"]
-  A -->|catena x402 --json| CLI[Catena CLI]
-  CLI --> POL["Catena policy engine<br/>allowlist, rules, approvals"]
-  POL -->|EIP-3009| USDC[(USDC on Base Sepolia)]
-  USDC --> E
-  E -.->|queued job, then delivery| A
-
-  classDef platform stroke-width:2px
-  class POL platform
-```
+The system diagram (agent, CLI, policy engine, USDC) is in the
+[README](../README.md). This page starts one level down, at the decision a
+single call walks through.
 
 ```mermaid
 flowchart TB
@@ -89,13 +80,17 @@ The demo treats these as distinct, because they are:
    the runner prints a per-status tally rather than assuming success.
 
 A charged-but-undelivered call is always surfaced as `paid_but_error` and
-the runner exits non-zero. Polling is fail-closed in every direction: a
-transport rejection or unreadable body is retried until the deadline; a
-non-ok HTTP response is wrapped as an error even when its JSON body looks
-benign; a body still claiming `queued` at the deadline (or one that never
-carried a usable `poll_url`) reports as charged-without-delivery rather
-than success. Each attempt carries an `AbortSignal` bounded by what is left
-of the deadline, so the configured limit is a real time bound.
+the runner exits non-zero. Polling is fail-closed in every direction:
+
+- A transport rejection or an unreadable body is retried until the deadline.
+- A non-ok HTTP response is wrapped as an error even when its JSON body
+  looks benign.
+- A body still claiming `queued` at the deadline, or one that never carried
+  a usable `poll_url`, reports as charged-without-delivery, never success.
+- A `poll_url` that resolves off the endpoint's origin is refused rather
+  than followed, so the payment signature cannot leak to another host.
+- Each attempt carries an `AbortSignal` bounded by what is left of the
+  deadline, so the configured limit is a real time bound.
 
 When the CLI does not report the charged amount, the meter records the
 amount that was **authorized** (`--maxAmount`), never the cheaper probe

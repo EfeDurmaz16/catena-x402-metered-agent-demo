@@ -17,31 +17,6 @@ flowchart LR
   class POL platform
 ```
 
-```mermaid
-flowchart TB
-  Q["Quote unpaid<br/>price from the 402 header"] --> CAP{Fits the run cap?}
-  CAP -- no --> STOP["Refused before payment<br/>the CLI is never invoked"]
-  CAP -- yes --> RES["Reserve the authorized ceiling<br/>same tick as the check"]
-  RES --> PAY["catena x402<br/>--maxAmount = min per-call, remaining"]
-
-  PAY --> POL{Catena policy}
-  POL -- counterparty not allowed --> BLOCK["Blocked, nothing charged"]
-  POL -- under threshold --> GO["Pays, settles on delivery"]
-  POL -- over threshold --> PARK["Parks as a pending intent<br/>human approves, re-run consumes it"]
-
-  subgraph client["Client bookkeeping: fast refusals, not the boundary"]
-    Q
-    CAP
-    RES
-  end
-  subgraph platform["Catena: the actual boundary"]
-    POL
-    BLOCK
-    GO
-    PARK
-  end
-```
-
 Each call follows the x402 cycle: request → 402 challenge → pay → retry →
 response. The runner tracks a running spend total in exact bigint
 micro-dollars and refuses the first call that would push the total past the
@@ -49,7 +24,15 @@ cap. Payments draw from a Catena-governed wallet account, so the platform's
 own controls (counterparty allowlist, spend limits, approval thresholds)
 rule every spend independently of this repo's bookkeeping.
 
-More detail: [docs/architecture.md](docs/architecture.md).
+The default run tells the whole story in under a minute: three calls, a
+$0.05 cap, images at about $0.021 each. Two of them pay ($0.042 of the cap
+spent). The third is quoted at $0.021 against the $0.008 that is left, so it
+is refused before payment and never reaches the CLI. The run still exits 0,
+because a cap that binds is the demo working.
+
+Where the refusal sits relative to Catena's own policy engine:
+[the policy flow diagram](docs/architecture.md#where-enforcement-lives) in
+[docs/architecture.md](docs/architecture.md).
 
 ## Setup (sandbox, ~15 minutes)
 
@@ -59,6 +42,8 @@ Requires Node >= 22.13 and pnpm.
 Catena environments serve `base-sepolia`; production serves `base`, and this
 demo pays a Base Sepolia challenge, so a production account cannot pay it
 (the CLI answers `networkMismatch` and charges nothing).
+
+Verified against @catena/cli 0.3.0 (the version the test fixtures record).
 
 ```sh
 npm i -g @catena/cli    # v0.3.0 or newer: --header support
@@ -70,11 +55,11 @@ catena accounts list    # note the account id and confirm it is a sandbox wallet
 call, so it needs a balance before the first run:
 
 ```sh
-catena accounts balance <account-id>   # confirm before running
+catena accounts deposit-address <account-id>   # where to send the USDC
+catena accounts balance <account-id>           # confirm before running
 ```
 
-Read the account's deposit address from the Catena console (or
-`catena accounts` output) and send it testnet USDC from
+Send that address testnet USDC from
 [faucet.circle.com](https://faucet.circle.com) (select Base Sepolia). A few
 dollars covers hundreds of calls at $0.021 each. No ETH is needed:
 settlement is a gasless EIP-3009 transfer.
@@ -101,26 +86,30 @@ policy > "Send money" > Authorized counterparties.
 ## Run
 
 ```sh
-pnpm run:metered -- --calls 2 --prompt "a robot paying a toll booth"
+pnpm demo                                              # three calls, cap binds on the third
+pnpm demo --calls 2 --prompt "a robot paying a toll booth"
 ```
 
-Default run: each call pays ~$0.021 of testnet USDC for one gpt-image-1
-generation and prints the delivered image URL, the settlement status and the
-running total. Lower `SPEND_CAP_USD` (or raise `--calls`) to watch the cap
-bind: the first call that would exceed it is refused before payment.
+Each call pays ~$0.021 of testnet USDC for one gpt-image-1 generation and
+prints the delivered image URL, the settlement status and the running total.
+Lower `SPEND_CAP_USD` (or raise `--calls`) to make the cap bind sooner: the
+first call that would exceed it is refused before payment.
 
-The agent also speaks the chat flow (`ENDPOINT_KIND=chat`,
+**Use the image flow.** The agent also speaks the chat flow
+(`ENDPOINT_KIND=chat`,
 `ENDPOINT_URL=https://testnet.blockrun.ai/api/v1/chat/completions`,
 `MODEL=openai/gpt-oss-20b`), but BlockRun's testnet chat upstream currently
 fails after the payment authorizes, so the run reports
 charged-without-delivery and exits non-zero. That is the honest behavior of
-the code, not a passing demo; use the image flow until the upstream is
-fixed.
+the code, not a passing demo.
 
-**Exit codes:** 0 when every call finished under the cap, including a clean
-cap stop and a payment parked for approval; 1 when a call failed or settled
-without delivery; 2 for a setup problem (bad config, missing account,
-counterparty not saved).
+**Exit codes:**
+
+| Code | Meaning                                                                                         |
+| ---- | ----------------------------------------------------------------------------------------------- |
+| 0    | Every call finished under the cap, including a clean cap stop and a payment parked for approval |
+| 1    | A call failed, or was charged without delivery                                                  |
+| 2    | A setup problem: bad config, missing account, counterparty not saved                            |
 
 **Approval-threshold demo:** in the Catena console open Governance >
 Policies > your policy > "Send money" > Rules > "+ Add rule" and set an
@@ -131,9 +120,15 @@ re-run the same command, and the retry consumes the approval.
 
 ## Tests
 
-`pnpm test` — unit and integration tests run against a local fake 402
-endpoint and a stub CLI binary; they never touch the network or move money.
-`pnpm lint`, `pnpm typecheck`, `pnpm format:check` complete the CI gate.
+`pnpm test`: unit and integration tests run against a local fake 402 endpoint
+and a stub CLI binary (fixtures recorded from @catena/cli 0.3.0). They never
+touch the network or move money.
+
+`pnpm check` runs the whole CI gate:
+
+```sh
+pnpm format:check && pnpm lint && pnpm typecheck && pnpm test
+```
 
 ## Scope
 
