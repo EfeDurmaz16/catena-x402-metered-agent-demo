@@ -4,8 +4,11 @@
  * by FAKE_RESULT and exits with FAKE_EXIT (default 0). Records its argv to
  * FAKE_ARGS_FILE so tests can assert how the real CLI would be invoked.
  *
- * Fixtures recorded from @catena/cli 0.3.0 (catena guide, 2026-07).
- * Re-capture on CLI minor bumps.
+ * Fixtures recorded from @catena/cli 0.3.0 (catena guide, 2026-07) and
+ * re-verified against 0.4.0 (catena guide diff, 2026-08): additive fields
+ * only (.bodyTruncated, .bodyPath), plus exits generalized from
+ * .retryFailed to "any result carrying .error" (the paid-only-error
+ * fixture). Re-capture on CLI minor bumps.
  */
 import { appendFileSync } from "node:fs"
 
@@ -61,6 +64,16 @@ const results = {
   "retry-failed": {
     paid: true,
     retryFailed: true,
+    payment: {
+      intentId: "int_test",
+      amountAtomicUsdc: "1000",
+      payTo: "0xpayto",
+    },
+    error: "paid HTTP retry threw before a body came back",
+  },
+  // 0.4.0 shape: the same outcome marked only by .error, no .retryFailed.
+  "paid-only-error": {
+    paid: true,
     payment: {
       intentId: "int_test",
       amountAtomicUsdc: "1000",

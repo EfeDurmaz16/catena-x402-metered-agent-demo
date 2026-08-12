@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -36,7 +36,8 @@ describe("payX402 result mapping", () => {
       | "counterparty"
       | "garbage"
       | "hard-fail"
-      | "retry-failed",
+      | "retry-failed"
+      | "paid-only-error",
     exit: "0" | "1" = "0",
   ) {
     vi.stubEnv("FAKE_RESULT", fakeResult)
@@ -85,6 +86,14 @@ describe("payX402 result mapping", () => {
     if (outcome.status === "paid_but_error") {
       expect(outcome.amountMicros).toBe(1000n)
       expect(outcome.intentId).toBe("int_test")
+    }
+  })
+
+  it("maps a paid result carrying only .error (0.4.0 shape) to paid_but_error", async () => {
+    const outcome = await run("paid-only-error", "1")
+    expect(outcome.status).toBe("paid_but_error")
+    if (outcome.status === "paid_but_error") {
+      expect(outcome.amountMicros).toBe(1000n)
     }
   })
 })
@@ -546,17 +555,36 @@ describe("money-safety regressions", () => {
 describe("runner setup checks", () => {
   it("exits 2 without CATENA_ACCOUNT_ID, before any CLI call", async () => {
     const script = fileURLToPath(new URL("../scripts/run.ts", import.meta.url))
+    // The runner loads .env from its working directory, so this spawn must
+    // be hermetic: with the repo as cwd, a developer's real .env would hand
+    // the runner a real account id and the test would move real money
+    // before failing. An empty temp cwd plus a bare environment leaves the
+    // account check as the only gate; CATENA_BIN points at the fake so a
+    // regression that reaches the CLI trips the args-file proof below
+    // instead of a live payment.
+    const dir = mkdtempSync(join(tmpdir(), "metered-hermetic-"))
+    const argsFile = join(dir, "args.jsonl")
+    // The child still needs the repo's node_modules to resolve tsx; a
+    // symlink brings that in without bringing the repo's cwd (and .env) in.
+    symlinkSync(
+      fileURLToPath(new URL("../node_modules", import.meta.url)),
+      join(dir, "node_modules"),
+    )
     const exitCode = await new Promise<number | null>((resolve, reject) => {
       const child = spawn(process.execPath, ["--import", "tsx", script], {
-        // A bare environment: no account id, so the runner must stop at the
-        // setup check rather than reaching the payment path.
-        env: { PATH: process.env.PATH ?? "" },
+        cwd: dir,
+        env: {
+          PATH: process.env.PATH ?? "",
+          CATENA_BIN: FAKE_BIN,
+          FAKE_ARGS_FILE: argsFile,
+        },
         stdio: "ignore",
       })
       child.on("error", reject)
       child.on("exit", resolve)
     })
     expect(exitCode).toBe(2)
+    expect(existsSync(argsFile)).toBe(false) // the CLI was never invoked
   })
 })
 

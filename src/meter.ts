@@ -19,6 +19,8 @@ export interface MeterEntry {
 export class SpendMeter {
   readonly capMicros: bigint
   private total = 0n
+  /** Sum of reservations not yet released or settled. */
+  private outstanding = 0n
   readonly entries: MeterEntry[] = []
 
   constructor(capMicros: bigint) {
@@ -45,20 +47,43 @@ export class SpendMeter {
     }
     if (this.total + priceMicros > this.capMicros) return false
     this.total += priceMicros
+    this.outstanding += priceMicros
     return true
+  }
+
+  /**
+   * Both exits of a reservation route through here: only a positive amount
+   * that is actually outstanding may leave, so budget that was never held
+   * cannot be handed back and the total can never go negative.
+   */
+  private takeReservation(reservedMicros: bigint): void {
+    if (reservedMicros <= 0n) {
+      throw new Error("Reservation to give back must be greater than 0")
+    }
+    if (reservedMicros > this.outstanding) {
+      throw new Error("Cannot give back more than is currently reserved")
+    }
+    this.outstanding -= reservedMicros
   }
 
   /** Give a reservation back when the call did not spend it. */
   release(reservedMicros: bigint): void {
+    this.takeReservation(reservedMicros)
     this.total -= reservedMicros
   }
 
   /**
    * Turn a reservation into a recorded charge. `actualMicros` may differ
    * from what was reserved (the seller charges what its own challenge asks,
-   * up to the authorized ceiling), so the difference is settled here.
+   * up to the authorized ceiling), so the difference is settled here. An
+   * actual above the reservation is recorded as-is: over-counting spend is
+   * the safe direction, and the next reserve() refuses on the true total.
    */
   settle(label: string, reservedMicros: bigint, actualMicros: bigint): void {
+    if (actualMicros < 0n) {
+      throw new Error("Settled amount cannot be negative")
+    }
+    this.takeReservation(reservedMicros)
     this.total += actualMicros - reservedMicros
     this.entries.push({ label, amountMicros: actualMicros })
   }
