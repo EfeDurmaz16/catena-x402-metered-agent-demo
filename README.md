@@ -1,4 +1,4 @@
-# catena-x402-metered-agent-demo
+# x402-metered-agent-demo
 
 A metered agent that consumes a real pay-per-request x402 endpoint
 (BlockRun's image-generation API on Base Sepolia) and pays each call from a
